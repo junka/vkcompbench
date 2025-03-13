@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -7,10 +8,12 @@
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan.h>
 
-
-struct Shader {
-    const char *code;
-    size_t size;
+class ComputeBuffer {
+public:
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    ComputeBuffer(VkBuffer buffer, VkDeviceMemory memory): buffer(buffer), memory(memory) {};
+    ~ComputeBuffer() {};
 };
 
 struct ComputeShader {
@@ -27,14 +30,43 @@ struct ComputeShader {
     VkPipeline pipeline;
     VkPipelineLayout layout;
 
-    std::vector<VkBuffer> buffers;
-    VkDeviceMemory bufferMemory;
+    std::vector<ComputeBuffer> buffers;
 
     VkQueryPool queryPool;
     float timestampPeriod;
+
+    VkDebugReportCallbackEXT reportcallback;
+    VkDebugUtilsMessengerEXT msgcallback;
 };
 
-VkInstance OpCreateInstance(void) {
+void checkInstanceExtension()
+{
+    uint32_t pPropertyCount;
+    vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, nullptr);
+    std::cout << "instance extension count: " << pPropertyCount << std::endl;
+    std::vector<VkExtensionProperties> pProperties(pPropertyCount);
+    vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, pProperties.data());
+    for (auto i = 0; i < pPropertyCount; i++) {
+        std::cout << "instance " << pProperties[i].extensionName << std::endl;
+    }
+
+}
+
+void checkDeviceExtension(struct ComputeShader &shader)
+{
+    const char* const* _ppExtensionNames = NULL;    
+    uint32_t _extensionCount = 0;
+    vkEnumerateDeviceExtensionProperties( shader.physicalDevice, NULL, &_extensionCount, NULL);
+
+    std::vector<VkExtensionProperties> extProps(_extensionCount);
+
+    vkEnumerateDeviceExtensionProperties( shader.physicalDevice, NULL, &_extensionCount, extProps.data());
+    for (auto i = 0; i < _extensionCount; i++) {
+        std::cout << extProps[i].extensionName << std::endl;
+    }
+}
+
+VkInstance OpCreateInstance(std::vector<const char *> &enabledLayerNames) {
     VkApplicationInfo applicationInfo = {};
     applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     applicationInfo.pApplicationName = "Vulkan Compute Shader Benchmark";
@@ -47,27 +79,45 @@ VkInstance OpCreateInstance(void) {
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
 
+    //enable debug and validation layers
+    instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
+    instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
+#if VK_EXT_debug_utils
+    std::vector<const char *> enabledExtensionNames{
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+        };
+#else
+    std::vector<const char *> enabledExtensionNames{
+        VK_EXT_DEBUG_REPORT_EXTENSION_NAME
+        };
+#endif
+    instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
+    instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
+    // std::cout << "Enabling debug extension " << instanceCreateInfo.enabledExtensionCount << std::endl;
+
+
     VkInstance instance = VK_NULL_HANDLE;
     VkResult error = vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
-    if (error) {
+    if (error != VK_SUCCESS) {
+        std::cout << "fail to create instance " << error << std::endl;
         return nullptr;
     }
 
     return instance;
 }
 
-void OpCreateDevice(struct ComputeShader &shader, VkInstance instance)
+void OpCreateDevice(struct ComputeShader &shader, VkInstance instance, std::vector<const char *> enabledLayerNames)
 {
     VkDevice device = VK_NULL_HANDLE;
     VkResult error;
     uint32_t count;
     error = vkEnumeratePhysicalDevices(instance, &count, nullptr);
-    if (error) {
+    if (error != VK_SUCCESS) {
         return;
     }
     std::vector<VkPhysicalDevice> physicalDevices(count);
     error = vkEnumeratePhysicalDevices(instance, &count, physicalDevices.data());
-    if (error) {
+    if (error != VK_SUCCESS) {
         return;
     }
 
@@ -114,9 +164,11 @@ void OpCreateDevice(struct ComputeShader &shader, VkInstance instance)
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+    deviceCreateInfo.enabledLayerCount = enabledLayerNames.size();
+    deviceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
 
     error = vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device);
-    if (error) {
+    if (error != VK_SUCCESS) {
         return;
     }
 
@@ -149,7 +201,7 @@ VkPipelineLayout OpCreatePipelineLayout(struct ComputeShader &shader, std::vecto
 
     error = vkCreateDescriptorSetLayout(device, &setLayoutCreateInfo, nullptr,
                                         &setLayout);
-    if (error) {
+    if (error != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
 
@@ -162,7 +214,7 @@ VkPipelineLayout OpCreatePipelineLayout(struct ComputeShader &shader, std::vecto
 
     error = vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr,
                                     &pipelineLayout);
-    if (error) {
+    if (error != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
     shader.descriptorSetLayout = setLayout;
@@ -204,7 +256,10 @@ VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescript
     shaderModuleCreateInfo.codeSize = shaderCode.size();
 
     error = vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr,
-                                &shaderModule);
+                                 &shaderModule);
+    if (error != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
 
     VkSpecializationInfo spec_constant_info = {};
     VkSpecializationMapEntry spec_constant_entry = {};
@@ -247,14 +302,7 @@ VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescript
 
 std::vector<VkDescriptorSetLayoutBinding> OpDescriptorSetLayoutBinding(void)
 {
-       // gridsample_bilinear.comp uses 4 bindings
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
-
-    /*
-        layout(binding=0) buffer InputA { vec4 x[]; } A;
-        layout(binding=1) buffer InputB { vec4 x[]; } B;
-        layout(binding=2) buffer Output { vec4 x[]; } C;
-    */
 
     // describe the first SSBO input used in the vector_add shader
     VkDescriptorSetLayoutBinding layoutBinding = {};
@@ -292,8 +340,7 @@ int32_t findMemoryTypeFromProperties(
     return -1;
 }
 
-
-VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> layoutBindings, int num_element)
+VkResult __OpCreateBuffer(struct ComputeShader &shader, int bufferflags, int memoryflags, int num_element)
 {
     VkDevice device = shader.device;
     uint32_t queueFamilyIndex = shader.queueFamilyIndex;
@@ -301,49 +348,28 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
     // create the buffers which will hold the data to be consumed by shader
     VkBufferCreateInfo bufferCreateInfo = {};
     bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferCreateInfo.size = sizeof(uint32_t) * num_element;  // size in bytes
-    // we will use SSBO or storage buffer so we can read and write
-    bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferCreateInfo.size = sizeof(uint32_t) * num_element;
+    bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;//bufferflags;
     bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     bufferCreateInfo.queueFamilyIndexCount = 1;
     bufferCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
 
-    VkBuffer bufferA;
-    error = vkCreateBuffer(device, &bufferCreateInfo, nullptr, &bufferA);
+    VkBuffer buffer;
+    error = vkCreateBuffer(device, &bufferCreateInfo, nullptr, &buffer);
     if (error) {
+        std::cout << "failed to create buffer!" << std::endl;
         return error;
     }
 
-    VkBuffer bufferB;
-    error = vkCreateBuffer(device, &bufferCreateInfo, nullptr, &bufferB);
-    if (error) {
-        return error;
-    }
-
-    VkBuffer bufferResult;
-    error = vkCreateBuffer(device, &bufferCreateInfo, nullptr, &bufferResult);
-    if (error) {
-        return error;
-    }
-
-    VkDeviceSize requiredMemorySize = 0;
-    VkMemoryRequirements bufferAMemoryRequirements;
-    vkGetBufferMemoryRequirements(device, bufferA, &bufferAMemoryRequirements);
-    requiredMemorySize += bufferAMemoryRequirements.size;
-    VkMemoryRequirements bufferBMemoryRequirements;
-    vkGetBufferMemoryRequirements(device, bufferB, &bufferBMemoryRequirements);
-    requiredMemorySize += bufferBMemoryRequirements.size;
-    VkMemoryRequirements bufferResultMemoryRequirements;
-    vkGetBufferMemoryRequirements(device, bufferResult, &bufferResultMemoryRequirements);
-    requiredMemorySize += bufferResultMemoryRequirements.size;
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(device, buffer, &memoryRequirements);
 
     VkPhysicalDeviceMemoryProperties memoryProperties;
     vkGetPhysicalDeviceMemoryProperties(shader.physicalDevice, &memoryProperties);
 
     auto memoryTypeIndex = findMemoryTypeFromProperties(
-        bufferAMemoryRequirements.memoryTypeBits, memoryProperties,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        memoryRequirements.memoryTypeBits, memoryProperties,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (0 > memoryTypeIndex) {
         std::cout << "failed to find compatible memory type" << std::endl;
         return VK_ERROR_UNKNOWN;
@@ -351,41 +377,29 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
 
     VkMemoryAllocateInfo allocateInfo = {};
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocateInfo.allocationSize = requiredMemorySize;
+    allocateInfo.allocationSize = memoryRequirements.size;
     allocateInfo.memoryTypeIndex = memoryTypeIndex;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     error = vkAllocateMemory(device, &allocateInfo, nullptr, &memory);
     if (error) {
+        std::cout << "failed to allocate memory!" << std::endl;
         return error;
     }
 
-    // to sub-allocate our memory block our buffers we bind the memory to the
-    // buffer starting at offset 0
-    VkDeviceSize memoryOffset = 0;
-    error = vkBindBufferMemory(device, bufferA, memory, memoryOffset);
+    error = vkBindBufferMemory(device, buffer, memory, 0);
     if (error) {
         return error;
     }
-    // each bind we increase the offset so it points to the end of the previous
-    // buffer range
-    memoryOffset += bufferAMemoryRequirements.size;
-    error = vkBindBufferMemory(device, bufferB, memory, memoryOffset);
-    if (error) {
-        return error;
-    }
-    // since all of these buffers are of they same type their alignment
-    // requirements match, however this will not always be the case so ensure
-    // that the offset meets the buffer memory alignment requirements
-    memoryOffset += bufferBMemoryRequirements.size;
-    error = vkBindBufferMemory(device, bufferResult, memory, memoryOffset);
-    if (error) {
-        return error;
-    }
-    shader.buffers.push_back(bufferA);
-    shader.buffers.push_back(bufferB);
-    shader.buffers.push_back(bufferResult);
-    shader.bufferMemory = memory;
 
+    ComputeBuffer combuffer(buffer, memory);
+    shader.buffers.push_back(combuffer);
+
+    return VK_SUCCESS;
+}
+
+VkResult OpCreateDescriptorPool(struct ComputeShader &shader,std::vector<VkDescriptorSetLayoutBinding> layoutBindings)
+{
+    VkDevice device = shader.device;
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
     descriptorPoolCreateInfo.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -405,10 +419,18 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
                             &descriptorPool);
     shader.descriptorPool = descriptorPool;
 
+    return VK_SUCCESS;
+}
+
+VkResult OpAllocateDescriptorSets(struct ComputeShader &shader)
+{
+    VkDevice device = shader.device;
+    VkResult error;
+
     // now we have our pool we can allocate a descriptor set
     VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
     descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    descriptorSetAllocateInfo.descriptorPool = descriptorPool;
+    descriptorSetAllocateInfo.descriptorPool = shader.descriptorPool;
     descriptorSetAllocateInfo.descriptorSetCount = 1;
     // this is the same layout we used to describe to the pipeline which
     // descriptors will be used
@@ -421,54 +443,77 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
     }
     shader.descriptorSet = descriptorSet;
 
-    std::vector<VkWriteDescriptorSet> descriptorSetWrites;
+    return VK_SUCCESS;
+}
+
+VkResult OpWriteDescriptorSet(struct ComputeShader &shader, VkBuffer buffer, int index)
+{
+    
+    VkDescriptorBufferInfo bufferInfo = {};
+    bufferInfo.buffer = buffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = VK_WHOLE_SIZE;
+
     VkWriteDescriptorSet writeDescriptorSet = {};
     writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writeDescriptorSet.dstSet = descriptorSet;
-    writeDescriptorSet.dstBinding = 0;
+    writeDescriptorSet.dstSet = shader.descriptorSet;
+    writeDescriptorSet.dstBinding = index;
     writeDescriptorSet.dstArrayElement = 0;
     writeDescriptorSet.descriptorCount = 1;
     writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writeDescriptorSet.pBufferInfo = &bufferInfo;
 
-    // each buffer needs its own buffer info as its passed as a pointer
-    VkDescriptorBufferInfo bufferAInfo = {};
-    bufferAInfo.buffer = bufferA;
-    bufferAInfo.offset = 0;
-    bufferAInfo.range = VK_WHOLE_SIZE;
-    writeDescriptorSet.pBufferInfo = &bufferAInfo;
-    descriptorSetWrites.push_back(writeDescriptorSet);
+    vkUpdateDescriptorSets(shader.device,1, &writeDescriptorSet, 0, nullptr);
+    return VK_SUCCESS;
+}
 
-    VkDescriptorBufferInfo bufferBInfo = {};
-    bufferBInfo.buffer = bufferB;
-    bufferBInfo.offset = 0;
-    bufferBInfo.range = VK_WHOLE_SIZE;
-    // but we can reuse the write descriptor set structure
-    writeDescriptorSet.dstBinding = 1;
-    writeDescriptorSet.pBufferInfo = &bufferBInfo;
-    descriptorSetWrites.push_back(writeDescriptorSet);
+VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> layoutBindings, int num_element)
+{
+    VkDevice device = shader.device;
+    uint32_t queueFamilyIndex = shader.queueFamilyIndex;
+    VkResult error;
 
-    VkDescriptorBufferInfo bufferResultInfo = {};
-    bufferResultInfo.buffer = bufferResult;
-    bufferResultInfo.offset = 0;
-    bufferResultInfo.range = VK_WHOLE_SIZE;
-    // just changing the binding and buffer info pointer for each buffer
-    writeDescriptorSet.dstBinding = 2;
-    writeDescriptorSet.pBufferInfo = &bufferResultInfo;
-    descriptorSetWrites.push_back(writeDescriptorSet);
+    
+    error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, num_element);
+    if (error) {
+        std::cout << "failed to create buffer1 !" << std::endl;
+        return error;
+    }
 
-    vkUpdateDescriptorSets(device, descriptorSetWrites.size(),
-                            descriptorSetWrites.data(), 0, nullptr);
+    error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, num_element);
+    if (error) {
+        std::cout << "failed to create buffer2 !" << std::endl;
+        return error;
+    }
+
+    error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, num_element);
+    if (error) {
+        std::cout << "failed to create buffer3 !" << std::endl;
+        return error;
+    }
+
+    OpCreateDescriptorPool(shader, layoutBindings);
+
+    OpAllocateDescriptorSets(shader);
+
+    OpWriteDescriptorSet(shader, shader.buffers[0].buffer, 0);
+    OpWriteDescriptorSet(shader, shader.buffers[1].buffer, 1);
+    OpWriteDescriptorSet(shader, shader.buffers[2].buffer, 2);
 
     // as with descriptor sets command buffers are allocated from a pool
     VkCommandPoolCreateInfo commandPoolCreateInfo = {};
     commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     // our command buffer will only be used once so we set the transient bit
-    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT|VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     commandPoolCreateInfo.queueFamilyIndex = shader.queueFamilyIndex;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     error = vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr,
                                 &commandPool);
     if (error) {
+        std::cout << "failed to create command pool!" << std::endl;
         return error;
     }
     shader.commandPool = commandPool;
@@ -489,8 +534,6 @@ VkResult OpDispatchCommand(struct ComputeShader &shader, const int num_element)
     VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferAllocateInfo.commandPool = commandPool;
-    // we will use a primary command buffer in our example, secondary command
-    // buffers are a powerful feature but we don't need that power here
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     commandBufferAllocateInfo.commandBufferCount = 1;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -501,7 +544,6 @@ VkResult OpDispatchCommand(struct ComputeShader &shader, const int num_element)
     }
     shader.commandBuffer = commandBuffer;
 
-    // now we can record our commands
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -526,26 +568,28 @@ VkResult OpDispatchCommand(struct ComputeShader &shader, const int num_element)
 void OpSubmitWork(struct ComputeShader &shader, const int num_element)
 {
     VkDevice device = shader.device;
-    VkDeviceMemory memory = shader.bufferMemory;
 
-    VkDeviceSize size = num_element * 3 * sizeof(float);
+    VkDeviceSize size = num_element * sizeof(uint32_t);
 
-    void *data = nullptr;
-    vkMapMemory(device, memory, 0, size, 0, &data);
+    void *aptr = nullptr, *bptr = nullptr, *cptr = nullptr;
 
-     // the device memory can now be written from the host
+    vkMapMemory(device, shader.buffers[0].memory, 0, size, 0, &aptr);
+    vkMapMemory(device, shader.buffers[1].memory, 0, size, 0, &bptr);
+    if (!aptr || !bptr) {
+        std::cout << "failed to map memory!" << std::endl;
+        return;
+    }
+
     size_t dataOffset = 0;
-    float *aData = static_cast<float *>(data);
-    // as before we need to manually specify where our buffers data lives
-    dataOffset += num_element;
-
-    float *bData = static_cast<float *>(data) + num_element;
+    float *aData = static_cast<float *>(aptr);
+    float *bData = static_cast<float *>(bptr);
 
     for (auto index = 0; index < num_element; index++) {
         aData[index] = float((index % 9) + 1) * 0.1f;
         bData[index] = float((index % 5) + 1) * 1.f;
     }
-    vkUnmapMemory(device, memory);
+    vkUnmapMemory(device, shader.buffers[0].memory);
+    vkUnmapMemory(device, shader.buffers[1].memory);
 
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -576,24 +620,27 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
 void OpVerifyWork(struct ComputeShader &shader, const int num_element)
 {
     VkDevice device = shader.device;
-    VkDeviceMemory memory = shader.bufferMemory;
 
-    VkDeviceSize size = num_element * 3 * sizeof(float);
+    VkDeviceSize size = num_element * sizeof(uint32_t);
 
-    void *data = nullptr;
-    vkMapMemory(device, memory, 0, size, 0, &data);
+    void *cptr = nullptr;
+    vkMapMemory(device, shader.buffers[2].memory, 0, size, 0, &cptr);
 
-    float *resultData = static_cast<float *>(data) + num_element * 2;
+    // float *aData = static_cast<float *>(aptr);
+    // float *bData = static_cast<float *>(bptr);
+    float *rData = static_cast<float *>(cptr);
     for (auto i  = 0; i < num_element; i++) {
-        if (std::fabs(resultData[i] - float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f))) > 0.01f) {
+        if (std::fabs(rData[i] - float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f))) > 0.01f) {
             std::cout << "Verification failed at index " << i << std::endl;
             std::cout << "Expected: " << float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f)) << std::endl;
-            std::cout << "Got: " << resultData[i] << std::endl;
+            std::cout << "Got: " << rData[i] << std::endl;
+            // std::cout << "a: " << aData[i] << std::endl;
+            // std::cout << "b: " << bData[i] << std::endl;
             break;
         }
     }
 
-    vkUnmapMemory(device, memory);
+    vkUnmapMemory(device, shader.buffers[2].memory);
 }
 
 void OpDestroyHandles(struct ComputeShader &shader, VkInstance instance)
@@ -603,17 +650,37 @@ void OpDestroyHandles(struct ComputeShader &shader, VkInstance instance)
 
     // destroy all the resources we created in reverse order
     vkDestroyCommandPool(device, commandPool, nullptr);
-
-    vkFreeMemory(device, shader.bufferMemory, nullptr);
-    for (auto buffer : shader.buffers) {
-        vkDestroyBuffer(device, buffer, nullptr);
+    
+    for (auto b : shader.buffers) {
+        vkFreeMemory(device, b.memory, nullptr);
+        vkDestroyBuffer(device, b.buffer, nullptr);
     }
+
     // vkFreeCommandBuffers(device, commandPool, 1, &shader.commandBuffer);
+    vkDestroyQueryPool(device, shader.queryPool, nullptr);
     vkDestroyDescriptorPool(device, shader.descriptorPool, nullptr);
     vkDestroyPipeline(device, shader.pipeline, nullptr);
     vkDestroyPipelineLayout(device, shader.layout, nullptr);
     vkDestroyDescriptorSetLayout(device, shader.descriptorSetLayout, nullptr);
     vkDestroyDevice(device, nullptr);
+
+    if (shader.reportcallback) {
+        auto vkDestroyDebugReportCallbackEXT =
+            reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(
+                vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"));
+        if (vkDestroyDebugReportCallbackEXT)
+            vkDestroyDebugReportCallbackEXT(instance, shader.reportcallback, nullptr);
+    }
+
+    if (shader.msgcallback) {
+        auto vkDestroyDebugUtilsMessengerEXT =
+            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+        if (vkDestroyDebugUtilsMessengerEXT)
+            vkDestroyDebugUtilsMessengerEXT(instance, shader.msgcallback, nullptr);
+    }
+
     vkDestroyInstance(instance, nullptr);
 }
 
@@ -638,25 +705,147 @@ double OpGetTimestamp(struct ComputeShader &shader)
     return (timestamps[1] - timestamps[0]) * shader.timestampPeriod * 1e-9;
 }
 
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
+    VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType,
+    uint64_t object, size_t location, int32_t messageCode,
+    const char *pLayerPrefix, const char *pMessage, void *pUserData) {
+    fprintf(stderr, "%s\n", pMessage);
+    return VK_FALSE;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT           messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT                  messageTypes,
+    const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
+    void*                                            pUserData) {
+    fprintf(stderr, "%s [%d]: %s\n", pCallbackData->pMessageIdName, 
+        pCallbackData->messageIdNumber,
+        pCallbackData->pMessage);
+    return VK_FALSE;
+}
+
+VkResult OpCreateDebugUtilsCallback(struct ComputeShader &shader, VkInstance instance, PFN_vkDebugUtilsMessengerCallbackEXT pfnCallback)
+{
+    VkResult error;
+    VkDebugUtilsMessengerCreateInfoEXT callbackCreateInfo;
+    callbackCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    callbackCreateInfo.pNext = NULL;
+    callbackCreateInfo.flags = 0;
+    callbackCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                         VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    callbackCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    callbackCreateInfo.pfnUserCallback = pfnCallback;
+    callbackCreateInfo.pUserData = nullptr;
+
+    VkDebugUtilsMessengerEXT callback = VK_NULL_HANDLE;
+    auto vkCreateDebugUtilsMessengerEXT =
+      reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+          vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+    if (vkCreateDebugUtilsMessengerEXT) {
+        error = vkCreateDebugUtilsMessengerEXT(instance, &callbackCreateInfo, nullptr,
+                                         &callback);
+        if (error != VK_SUCCESS) {
+            std::cerr << "Failed to create debug callback" << std::endl;
+            return error;
+        }
+    }
+    shader.msgcallback = callback;
+
+    return error;
+}
+
+VkResult OpCreateDebugReportCallback(struct ComputeShader &shader, VkInstance instance, PFN_vkDebugReportCallbackEXT pfnCallback)
+{
+    VkResult error;
+    VkDebugReportCallbackCreateInfoEXT callbackCreateInfo;
+    callbackCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
+    callbackCreateInfo.pNext = nullptr;
+    callbackCreateInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT |
+                                VK_DEBUG_REPORT_WARNING_BIT_EXT |
+                                VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
+    callbackCreateInfo.pfnCallback = pfnCallback;
+    callbackCreateInfo.pUserData = nullptr;
+    VkDebugReportCallbackEXT callback = VK_NULL_HANDLE;
+    auto vkCreateDebugReportCallbackEXT =
+      reinterpret_cast<PFN_vkCreateDebugReportCallbackEXT>(
+          vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT"));
+    if (vkCreateDebugReportCallbackEXT) {
+        error = vkCreateDebugReportCallbackEXT(instance, &callbackCreateInfo, nullptr,
+                                         &callback);
+        if (error != VK_SUCCESS) {
+            std::cout << "Failed to create debug report callback" << std::endl;
+        }
+    }
+    shader.reportcallback = callback;
+
+    return error;
+}
+
+std::string findValidationLayerSupport() {
+    uint32_t layerCount;
+    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+
+    std::vector<VkLayerProperties> availableLayers(layerCount);
+    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+    for (auto layer : availableLayers) {
+        // std::cout << "layer name " << layer.layerName << ": "<< layer.description << std::endl;
+
+        if (strstr(layer.layerName, "validation")) {
+            return std::string(layer.layerName);
+        }
+    }
+
+    return nullptr;
+}
+
+void checkVulkanVersion()
+{
+    uint32_t version;
+    vkEnumerateInstanceVersion(&version);
+    std::cout << "version " << VK_VERSION_MAJOR(version) << "." << VK_VERSION_MINOR(version) << "." << VK_VERSION_PATCH(version) << std::endl;
+}
+
 int main() {
 
     struct ComputeShader shader;
+    memset(&shader, 0, sizeof(shader));
+    std::vector<const char *> enabledLayerNames;
 
-    VkInstance instance = OpCreateInstance();
+    checkVulkanVersion();
+    std::string str = findValidationLayerSupport();
+    if (!str.empty()) {
+        enabledLayerNames.push_back(str.c_str());
+        std::cout << "validation layer found " << enabledLayerNames[0] << std::endl;
+    }
+
+    // checkInstanceExtension();
+    VkInstance instance = OpCreateInstance(enabledLayerNames);
     if (!instance) {
         return -1;
     }
-    const int num_element = 1024*1024;
+    const int num_element = 1024 * 1024;
     const uint32_t loop_count = 10000;
+#if VK_EXT_debug_utils
+    OpCreateDebugUtilsCallback(shader, instance, &debugUtilsCallback);
+#else
+    OpCreateDebugReportCallback(shader, instance, &debugReportCallback);
+#endif
+    OpCreateDevice(shader, instance, enabledLayerNames);
+    
+    // checkDeviceExtension(shader);
 
-    OpCreateDevice(shader, instance);
-    
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
-    
+
     VkPipeline pipeline = OpCreatePipeline(shader, layoutBindings, loop_count);
     shader.pipeline = pipeline;
 
-    OpCreateBuffers(shader, layoutBindings, num_element);
+    if (OpCreateBuffers(shader, layoutBindings, num_element)) {
+        std::cout << "Failed to create buffers" << std::endl;
+        return -1;
+    }
 
     OpCreateQueryPool(shader);
 
