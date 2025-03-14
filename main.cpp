@@ -12,6 +12,8 @@
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan.h>
 
+#include "benchmark_spv.h"
+
 class ComputeBuffer {
 public:
     VkBuffer buffer;
@@ -250,19 +252,6 @@ VkPipelineLayout OpCreatePipelineLayout(struct ComputeShader &shader, std::vecto
     return pipelineLayout;
 }
 
-// load a SPIR-V binary from file
-std::vector<char> OpLoadShaderCode(const char *filename) {
-  std::vector<char> shaderCode;
-  if (FILE *fp = fopen(filename, "rb")) {
-    char buf[1024];
-    while (size_t len = fread(buf, 1, sizeof(buf), fp)) {
-      shaderCode.insert(shaderCode.end(), buf, buf + len);
-    }
-    fclose(fp);
-  }
-  return shaderCode;
-}
-
 VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> &layoutBindings, uint32_t loop_count)
 {
     VkDevice device = shader.device;
@@ -280,9 +269,8 @@ VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescript
     // load vector_add.spv from file so we can create a pipeline
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
     shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    auto shaderCode = OpLoadShaderCode( "benchmark.spv");
-    shaderModuleCreateInfo.pCode = reinterpret_cast<uint32_t *>(shaderCode.data());
-    shaderModuleCreateInfo.codeSize = shaderCode.size();
+    shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t *>(shaderfp32_code);
+    shaderModuleCreateInfo.codeSize = shaderfp32_size;
 
     OP_GET_FUNC(vkCreateShaderModule);
     error = vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr,
@@ -887,7 +875,7 @@ std::string findValidationLayerSupport() {
     std::vector<VkLayerProperties> availableLayers(layerCount);
     vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
     for (auto layer : availableLayers) {
-        std::cout << "layer name " << layer.layerName << ": "<< layer.description << std::endl;
+        // std::cout << "layer name " << layer.layerName << ": "<< layer.description << std::endl;
         // possible validation layers:
         // VK_LAYER_KHRONOS_validation
         // VK_LAYER_LUNARG_standard_validation
