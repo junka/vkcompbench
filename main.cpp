@@ -6,13 +6,14 @@
 #include <vector>
 #include <map>
 #include <cmath>
+#include <type_traits>
 
 #include <dlfcn.h>
 
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan.h>
 
-#include "benchmark_spv.h"
+#include "benchmark.h"
 
 class ComputeBuffer {
 public:
@@ -22,11 +23,17 @@ public:
     ~ComputeBuffer() {};
 };
 
-struct ComputeShader {
+struct ComputeDevice {
     VkDevice device;
     VkPhysicalDevice physicalDevice;
     uint32_t queueFamilyIndex;
     VkQueue queue;
+
+    float timestampPeriod;
+};
+
+struct ComputeShader {
+    struct ComputeDevice *device;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     VkDescriptorSetLayout descriptorSetLayout;
@@ -39,10 +46,6 @@ struct ComputeShader {
     std::vector<ComputeBuffer> buffers;
 
     VkQueryPool queryPool;
-    float timestampPeriod;
-
-    VkDebugReportCallbackEXT reportcallback;
-    VkDebugUtilsMessengerEXT msgcallback;
 };
 
 struct VulkanLib {
@@ -74,12 +77,14 @@ void checkInstanceExtension()
 void checkDeviceExtension(struct ComputeShader &shader)
 {
     uint32_t _extensionCount = 0;
+    struct ComputeDevice *dev = shader.device;
+
     OP_GET_FUNC(vkEnumerateDeviceExtensionProperties);
-    vkEnumerateDeviceExtensionProperties( shader.physicalDevice, NULL, &_extensionCount, NULL);
+    vkEnumerateDeviceExtensionProperties( dev->physicalDevice, NULL, &_extensionCount, NULL);
 
     std::vector<VkExtensionProperties> extProps(_extensionCount);
 
-    vkEnumerateDeviceExtensionProperties( shader.physicalDevice, NULL, &_extensionCount, extProps.data());
+    vkEnumerateDeviceExtensionProperties( dev->physicalDevice, NULL, &_extensionCount, extProps.data());
     for (uint32_t i = 0; i < _extensionCount; i++) {
         std::cout << extProps[i].extensionName << std::endl;
     }
@@ -128,7 +133,7 @@ VkInstance OpCreateInstance(std::vector<const char *> &enabledLayerNames) {
     return instance;
 }
 
-void OpCreateDevice(struct ComputeShader &shader, VkInstance instance, std::vector<const char *> enabledLayerNames)
+void OpCreateDevice(struct ComputeDevice &dev, VkInstance instance, std::vector<const char *> enabledLayerNames)
 {
     VkDevice device = VK_NULL_HANDLE;
     VkResult error;
@@ -177,7 +182,7 @@ void OpCreateDevice(struct ComputeShader &shader, VkInstance instance, std::vect
 
     OP_GET_FUNC(vkGetPhysicalDeviceProperties2);
     vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
-    shader.timestampPeriod = properties2.properties.limits.timestampPeriod;
+    dev.timestampPeriod = properties2.properties.limits.timestampPeriod;
     std::cout << "GPU " << properties2.properties.deviceName << std::endl;
 
     VkDeviceQueueCreateInfo queueCreateInfo = {};
@@ -204,16 +209,17 @@ void OpCreateDevice(struct ComputeShader &shader, VkInstance instance, std::vect
     OP_GET_FUNC(vkGetDeviceQueue);
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
-    shader.physicalDevice = physicalDevice;
-    shader.queueFamilyIndex = queueFamilyIndex;
-    shader.device = device;
-    shader.queue = queue;
+    dev.physicalDevice = physicalDevice;
+    dev.queueFamilyIndex = queueFamilyIndex;
+    dev.device = device;
+    dev.queue = queue;
 }
 
 
 VkPipelineLayout OpCreatePipelineLayout(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> &layoutBindings)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkResult error;
@@ -252,9 +258,11 @@ VkPipelineLayout OpCreatePipelineLayout(struct ComputeShader &shader, std::vecto
     return pipelineLayout;
 }
 
-VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> &layoutBindings, uint32_t loop_count)
+VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> &layoutBindings,
+                            uint32_t loop_count, unsigned int code_size, unsigned char *code)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkShaderModule shaderModule = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkResult error;
@@ -269,8 +277,8 @@ VkPipeline OpCreatePipeline(struct ComputeShader &shader, std::vector<VkDescript
     // load vector_add.spv from file so we can create a pipeline
     VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
     shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t *>(shaderfp32_code);
-    shaderModuleCreateInfo.codeSize = shaderfp32_size;
+    shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t *>(code);
+    shaderModuleCreateInfo.codeSize = code_size;
 
     OP_GET_FUNC(vkCreateShaderModule);
     error = vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr,
@@ -360,15 +368,16 @@ int32_t findMemoryTypeFromProperties(
     return -1;
 }
 
-VkResult __OpCreateBuffer(struct ComputeShader &shader, int bufferflags, int memoryflags, int num_element)
+VkResult __OpCreateBuffer(struct ComputeShader &shader, int bufferflags, int memoryflags, int num_element, size_t element_size)
 {
-    VkDevice device = shader.device;
-    uint32_t queueFamilyIndex = shader.queueFamilyIndex;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
+    uint32_t queueFamilyIndex = dev->queueFamilyIndex;
     VkResult error;
     // create the buffers which will hold the data to be consumed by shader
     VkBufferCreateInfo bufferCreateInfo = {};
     bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferCreateInfo.size = sizeof(uint32_t) * num_element;
+    bufferCreateInfo.size = element_size * num_element;
     bufferCreateInfo.usage = bufferflags;
     bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     bufferCreateInfo.queueFamilyIndexCount = 1;
@@ -388,7 +397,7 @@ VkResult __OpCreateBuffer(struct ComputeShader &shader, int bufferflags, int mem
 
     VkPhysicalDeviceMemoryProperties memoryProperties;
     OP_GET_FUNC(vkGetPhysicalDeviceMemoryProperties);
-    vkGetPhysicalDeviceMemoryProperties(shader.physicalDevice, &memoryProperties);
+    vkGetPhysicalDeviceMemoryProperties(dev->physicalDevice, &memoryProperties);
     // std::cout << "memoryRequireBits: " << std::bitset<sizeof(memoryRequirements.memoryTypeBits)*8>(memoryRequirements.memoryTypeBits) << std::endl;
     // std::cout << "memoryTypeCount: " << memoryProperties.memoryTypeCount << std::endl;
     // for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
@@ -430,7 +439,8 @@ VkResult __OpCreateBuffer(struct ComputeShader &shader, int bufferflags, int mem
 
 VkResult OpCreateDescriptorPool(struct ComputeShader &shader,std::vector<VkDescriptorSetLayoutBinding> layoutBindings)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
     descriptorPoolCreateInfo.sType =
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -456,7 +466,8 @@ VkResult OpCreateDescriptorPool(struct ComputeShader &shader,std::vector<VkDescr
 
 VkResult OpAllocateDescriptorSets(struct ComputeShader &shader)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkResult error;
 
     // now we have our pool we can allocate a descriptor set
@@ -497,31 +508,35 @@ VkResult OpWriteDescriptorSet(struct ComputeShader &shader, VkBuffer buffer, int
     writeDescriptorSet.pBufferInfo = &bufferInfo;
 
     OP_GET_FUNC(vkUpdateDescriptorSets);
-    vkUpdateDescriptorSets(shader.device,1, &writeDescriptorSet, 0, nullptr);
+    vkUpdateDescriptorSets(shader.device->device,1, &writeDescriptorSet, 0, nullptr);
     return VK_SUCCESS;
 }
 
-VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> layoutBindings, int num_element)
+VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorSetLayoutBinding> layoutBindings, int num_element, size_t element_size)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkResult error;
 
     error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, num_element);
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             num_element, element_size);
     if (error) {
         std::cout << "failed to create buffer1 !" << std::endl;
         return error;
     }
 
     error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, num_element);
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             num_element, element_size);
     if (error) {
         std::cout << "failed to create buffer2 !" << std::endl;
         return error;
     }
 
     error = __OpCreateBuffer(shader, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, num_element);
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             num_element, element_size);
     if (error) {
         std::cout << "failed to create buffer3 !" << std::endl;
         return error;
@@ -540,7 +555,7 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
     commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     // our command buffer will only be used once so we set the transient bit
     commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT|VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    commandPoolCreateInfo.queueFamilyIndex = shader.queueFamilyIndex;
+    commandPoolCreateInfo.queueFamilyIndex = shader.device->queueFamilyIndex;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     OP_GET_FUNC(vkCreateCommandPool);
     error = vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr,
@@ -557,7 +572,8 @@ VkResult OpCreateBuffers(struct ComputeShader &shader, std::vector<VkDescriptorS
 VkResult OpDispatchCommand(struct ComputeShader &shader, const int num_element)
 {
     VkResult error;
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkCommandPool commandPool = shader.commandPool;
     VkQueryPool queryPool = shader.queryPool;
     VkPipeline pipeline = shader.pipeline;
@@ -606,11 +622,13 @@ VkResult OpDispatchCommand(struct ComputeShader &shader, const int num_element)
     return VK_SUCCESS;
 }
 
+template<typename T>
 void OpSubmitWork(struct ComputeShader &shader, const int num_element)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
 
-    VkDeviceSize size = num_element * sizeof(uint32_t);
+    VkDeviceSize size = num_element * sizeof(T);
 
     void *aptr = nullptr, *bptr = nullptr;
     OP_GET_FUNC(vkMapMemory);
@@ -625,13 +643,20 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
         return;
     }
 
-    float *aData = static_cast<float *>(aptr);
-    float *bData = static_cast<float *>(bptr);
-
-    for (auto index = 0; index < num_element; index++) {
-        aData[index] = float((index % 9) + 1) * 0.1f;
-        bData[index] = float((index % 5) + 1) * 1.f;
+    T *aData = static_cast<T *>(aptr);
+    T *bData = static_cast<T *>(bptr);
+    if constexpr (std::is_same_v<T, float>) {
+        for (auto i = 0; i < num_element; i++) {
+            aData[i] = float(i % 9) * 0.1f;
+            bData[i] = float(i % 5) * 1.f;
+        }
+    } else if constexpr (std::is_same_v<T, int>) {
+        for (auto i = 0; i < num_element; i++) {
+           aData[i] = 1;
+           bData[i] = 1;
+        }
     }
+
     vkUnmapMemory(device, shader.buffers[0].memory);
     vkUnmapMemory(device, shader.buffers[1].memory);
 
@@ -647,28 +672,30 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
     fence_create_info.flags = 0;
     VkFence fence = VK_NULL_HANDLE;
     OP_GET_FUNC(vkCreateFence);
-    vkCreateFence(shader.device, &fence_create_info, nullptr, &fence);
+    vkCreateFence(device, &fence_create_info, nullptr, &fence);
 
-    vkQueueSubmit(shader.queue, 1, &submitInfo, fence);
+    vkQueueSubmit(dev->queue, 1, &submitInfo, fence);
 #else
-    vkQueueSubmit(shader.queue, 1, &submitInfo, nullptr);
+    vkQueueSubmit(dev->queue, 1, &submitInfo, nullptr);
 #endif
-    vkQueueWaitIdle(shader.queue);
+    vkQueueWaitIdle(dev->queue);
 #if 0
     std::cout << "waiting for fence" << std::endl;
     OP_GET_FUNC(vkWaitForFences);
     OP_GET_FUNC(vkDestroyFence);
-    vkWaitForFences(shader.device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkDestroyFence(shader.device, fence, nullptr);
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(device, fence, nullptr);
     std::cout << "fence done" << std::endl;
 #endif
 }
 
+template<typename T>
 void OpVerifyWork(struct ComputeShader &shader, const int num_element)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
 
-    VkDeviceSize size = num_element * sizeof(uint32_t);
+    VkDeviceSize size = num_element * sizeof(T);
 
     void *cptr = nullptr;
     OP_GET_FUNC(vkMapMemory);
@@ -676,26 +703,37 @@ void OpVerifyWork(struct ComputeShader &shader, const int num_element)
 
     vkMapMemory(device, shader.buffers[2].memory, 0, size, 0, &cptr);
 
-    // float *aData = static_cast<float *>(aptr);
-    // float *bData = static_cast<float *>(bptr);
-    float *rData = static_cast<float *>(cptr);
-    for (auto i  = 0; i < num_element; i++) {
-        if (std::fabs(rData[i] - float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f))) > 0.01f) {
-            std::cout << "Verification failed at index " << i << std::endl;
-            std::cout << "Expected: " << float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f)) << std::endl;
-            std::cout << "Got: " << rData[i] << std::endl;
-            // std::cout << "a: " << aData[i] << std::endl;
-            // std::cout << "b: " << bData[i] << std::endl;
-            break;
+    T *rData = static_cast<T *>(cptr);
+    if constexpr (std::is_same_v<T, int>) {
+        for (auto i  = 0; i < num_element; i++) {
+            if (rData[i] != 10000 * 8 + 1) {
+                std::cout << "Verification failed at index " << i << std::endl;
+                std::cout << "Expected: " << 80001 << "\t";
+                std::cout << "Got: " << rData[i] << std::endl;
+                break;
+
+            }
+        }
+    } else if constexpr (std::is_same_v<T, float>) {
+        for (auto i  = 0; i < num_element; i++) {
+            if (std::fabs(rData[i] - float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f))) > 0.01f) {
+                std::cout << "Verification failed at index " << i << std::endl;
+                std::cout << "Expected: " << float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f)) << "\t";
+                std::cout << "Got: " << rData[i] << std::endl;
+                // std::cout << "a: " << aData[i] << std::endl;
+                // std::cout << "b: " << bData[i] << std::endl;
+                break;
+            }
         }
     }
 
     vkUnmapMemory(device, shader.buffers[2].memory);
 }
 
-void OpDestroyHandles(struct ComputeShader &shader, VkInstance instance)
+void OpDestroyShader(struct ComputeShader &shader)
 {
-    VkDevice device = shader.device;
+    struct ComputeDevice *dev = shader.device;
+    VkDevice device = dev->device;
     VkCommandPool commandPool = shader.commandPool;
 
     OP_GET_FUNC(vkDestroyCommandPool);
@@ -706,9 +744,6 @@ void OpDestroyHandles(struct ComputeShader &shader, VkInstance instance)
     OP_GET_FUNC(vkDestroyPipeline);
     OP_GET_FUNC(vkDestroyPipelineLayout);
     OP_GET_FUNC(vkDestroyDescriptorSetLayout);
-    OP_GET_FUNC(vkDestroyDevice);
-    OP_GET_FUNC(vkGetInstanceProcAddr);
-    OP_GET_FUNC(vkDestroyInstance);
 
     // destroy all the resources we created in reverse order
     vkDestroyCommandPool(device, commandPool, nullptr);
@@ -724,51 +759,33 @@ void OpDestroyHandles(struct ComputeShader &shader, VkInstance instance)
     vkDestroyPipeline(device, shader.pipeline, nullptr);
     vkDestroyPipelineLayout(device, shader.layout, nullptr);
     vkDestroyDescriptorSetLayout(device, shader.descriptorSetLayout, nullptr);
-    vkDestroyDevice(device, nullptr);
-
-    if (shader.reportcallback) {
-        auto vkDestroyDebugReportCallbackEXT =
-            reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(
-                vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"));
-        if (vkDestroyDebugReportCallbackEXT)
-            vkDestroyDebugReportCallbackEXT(instance, shader.reportcallback, nullptr);
-    }
-
-    if (shader.msgcallback) {
-        auto vkDestroyDebugUtilsMessengerEXT =
-            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-                vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
-
-        if (vkDestroyDebugUtilsMessengerEXT)
-            vkDestroyDebugUtilsMessengerEXT(instance, shader.msgcallback, nullptr);
-    }
-
-    vkDestroyInstance(instance, nullptr);
 }
 
 void OpCreateQueryPool(struct ComputeShader &shader)
 {
     VkQueryPool queryPool;
+    struct ComputeDevice *dev = shader.device;
     VkQueryPoolCreateInfo queryPoolCreateInfo = {};
     queryPoolCreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     queryPoolCreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
     queryPoolCreateInfo.queryCount = 2;
 
     OP_GET_FUNC(vkCreateQueryPool);
-    vkCreateQueryPool(shader.device, &queryPoolCreateInfo, nullptr, &queryPool);
+    vkCreateQueryPool(dev->device, &queryPoolCreateInfo, nullptr, &queryPool);
     shader.queryPool = queryPool;
 }
 
 double OpGetTimestamp(struct ComputeShader &shader)
 {
+    struct ComputeDevice *dev = shader.device;
     VkQueryPool queryPool = shader.queryPool;
     VkQueryResultFlags flags = VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT;
     uint64_t timestamps[2];
 
     OP_GET_FUNC(vkGetQueryPoolResults);
-    vkGetQueryPoolResults(shader.device, queryPool, 0, 2, 2 * sizeof(uint64_t),
+    vkGetQueryPoolResults(dev->device, queryPool, 0, 2, 2 * sizeof(uint64_t),
                          timestamps, sizeof(uint64_t), flags);
-    return (timestamps[1] - timestamps[0]) * shader.timestampPeriod * 1e-9;
+    return (timestamps[1] - timestamps[0]) * dev->timestampPeriod * 1e-9;
 }
 
 #if VK_EXT_debug_utils
@@ -789,7 +806,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
     }
     return VK_FALSE;
 }
-VkResult OpCreateDebugUtilsCallback(struct ComputeShader &shader, VkInstance instance, PFN_vkDebugUtilsMessengerCallbackEXT pfnCallback)
+VkDebugUtilsMessengerEXT OpCreateDebugUtilsCallback(VkInstance instance, PFN_vkDebugUtilsMessengerCallbackEXT pfnCallback)
 {
     VkResult error;
     OP_GET_FUNC(vkGetInstanceProcAddr);
@@ -815,12 +832,10 @@ VkResult OpCreateDebugUtilsCallback(struct ComputeShader &shader, VkInstance ins
                                          &callback);
         if (error != VK_SUCCESS) {
             std::cerr << "Failed to create debug callback" << std::endl;
-            return error;
+            return nullptr;
         }
     }
-    shader.msgcallback = callback;
-
-    return error;
+    return callback;
 }
 #else
 VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
@@ -838,7 +853,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
 }
 
 
-VkResult OpCreateDebugReportCallback(struct ComputeShader &shader, VkInstance instance, PFN_vkDebugReportCallbackEXT pfnCallback)
+VkDebugReportCallbackEXT OpCreateDebugReportCallback(VkInstance instance, PFN_vkDebugReportCallbackEXT pfnCallback)
 {
     VkResult error;
     OP_GET_FUNC(vkGetInstanceProcAddr);
@@ -859,11 +874,11 @@ VkResult OpCreateDebugReportCallback(struct ComputeShader &shader, VkInstance in
                                          &callback);
         if (error != VK_SUCCESS) {
             std::cout << "Failed to create debug report callback" << std::endl;
+            return nullptr;
         }
     }
-    shader.reportcallback = callback;
 
-    return error;
+    return callback;
 }
 #endif
 
@@ -973,7 +988,6 @@ void unloadLibrary(void *lib) {
 
 int main() {
 
-    struct ComputeShader shader = {};
     vklib.symbols = loadLibrary();
 
     std::vector<const char *> enabledLayerNames;
@@ -991,59 +1005,110 @@ int main() {
         return -1;
     }
 
-    const int num_element = 1024 * 1024;
-    const uint32_t loop_count = 10000;
-
 #if VK_EXT_debug_utils
-    OpCreateDebugUtilsCallback(shader, instance, &debugUtilsCallback);
+    VkDebugUtilsMessengerEXT callback = OpCreateDebugUtilsCallback(instance, &debugUtilsCallback);
 #else
-    OpCreateDebugReportCallback(shader, instance, &debugReportCallback);
+    VkDebugReportCallbackEXT callback = OpCreateDebugReportCallback(instance, &debugReportCallback);
 #endif
-
-    OpCreateDevice(shader, instance, enabledLayerNames);
-    
-    // checkDeviceExtension(shader);
 
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
 
-    VkPipeline pipeline = OpCreatePipeline(shader, layoutBindings, loop_count);
-    shader.pipeline = pipeline;
+    const int num_element = 1024 * 1024;
+    const uint32_t loop_count = 10000;
 
-    if (OpCreateBuffers(shader, layoutBindings, num_element)) {
-        std::cout << "Failed to create buffers" << std::endl;
-        return -1;
+    struct ComputeDevice dev = {};
+
+    OpCreateDevice(dev, instance, enabledLayerNames);
+    
+    // checkDeviceExtension(shader);
+
+    struct testcase {
+        const char *name;
+        unsigned int code_size;
+        unsigned char *code;
+    } testcases[] = {
+        {"fp32", shaderfp32_size, shaderfp32_code},
+        // {"fp16", shaderfp16_size, shaderfp16_code},
+        {"int32", shaderint32_size, shaderint32_code},
+        // {"int16", shaderint16_size, shaderint16_code},
+        // {"int8", shaderint8_size, shaderint8_code},
+    };
+    for (size_t i = 0; i < sizeof(testcases) / sizeof(testcases[0]); i++) {
+        struct ComputeShader shader = {};
+        shader.device = &dev;
+        VkPipeline pipeline = OpCreatePipeline(shader, layoutBindings, loop_count, testcases[i].code_size, testcases[i].code);
+        shader.pipeline = pipeline;
+
+        if (OpCreateBuffers(shader, layoutBindings, num_element, sizeof(uint32_t))) {
+            std::cout << "Failed to create buffers" << std::endl;
+            return -1;
+        }
+
+        OpCreateQueryPool(shader);
+
+        OP_GET_FUNC(vkResetCommandBuffer);
+        double duration = MAXFLOAT;
+        for (int sloop = 0; sloop < 10; sloop++) {
+            OpDispatchCommand(shader, num_element);
+            if (std::strcmp(testcases[i].name,"fp32")==0) {
+                OpSubmitWork<float>(shader, num_element);
+            } else if (std::strcmp(testcases[i].name,"int32")==0) {
+                OpSubmitWork<int>(shader, num_element);
+            }
+            duration = std::fmin(OpGetTimestamp(shader), duration);
+            vkResetCommandBuffer(shader.commandBuffer, 0);
+        }
+        
+        if (std::strcmp(testcases[i].name,"fp32")==0) {
+            OpVerifyWork<float>(shader, num_element);
+        } else if (std::strcmp(testcases[i].name,"int32")==0) {
+            OpVerifyWork<int>(shader, num_element);
+        }
+
+        std::cout << "Testcase: " << testcases[i].name << "\t";
+        std::cout << "Duration: " << duration << "s" << "\t";
+        const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
+        double ops = numOps / duration;
+        std::cout << "NumOps: " << ops << std::endl;
+        std::cout << "Throughput: ";
+        if (ops > 1.0f * 1e12) {
+            std::cout << ops / 1e12 << " TFLOPS" << std::endl;
+        } else if (ops > 1.0f * 1e9) {
+            std::cout << ops / 1e9 << " GFLOPS" << std::endl;
+        } else if (ops > 1.0f * 1e6) {
+            std::cout << ops / 1e6 << " MFLOPS" << std::endl;
+        } else if (ops > 1.0f * 1e3) {
+            std::cout << ops / 1e3 << " KFLOPS" << std::endl;
+        } else {
+            std::cout << ops << " FLOPS" << std::endl;
+        }
+        OpDestroyShader(shader);
     }
 
-    OpCreateQueryPool(shader);
+    OP_GET_FUNC(vkDestroyDevice);
+    vkDestroyDevice(dev.device, nullptr);
 
-    OP_GET_FUNC(vkResetCommandBuffer);
-    double duration = MAXFLOAT;
-    for (int i = 0; i < 10; i++) {
-        OpDispatchCommand(shader, num_element);
-        OpSubmitWork(shader, num_element);
+    OP_GET_FUNC(vkGetInstanceProcAddr);
+    OP_GET_FUNC(vkDestroyInstance);
 
-        duration = std::fmin(OpGetTimestamp(shader), duration);
-        vkResetCommandBuffer(shader.commandBuffer, 0);
+    if (callback) {
+#if VK_EXT_debug_utils
+        auto vkDestroyDebugUtilsMessengerEXT =
+            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+        if (vkDestroyDebugUtilsMessengerEXT)
+            vkDestroyDebugUtilsMessengerEXT(instance, callback, nullptr);
+#else
+        auto vkDestroyDebugReportCallbackEXT =
+            reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(
+                vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"));
+        if (vkDestroyDebugReportCallbackEXT)
+            vkDestroyDebugReportCallbackEXT(instance, callback, nullptr);
+#endif
     }
-    std::cout << "Duration: " << duration << "s" << std::endl;
-    const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
-    double ops = numOps / duration;
-    std::cout << "NumOps: " << ops << std::endl;
-    std::cout << "Throughput: ";
-    if (ops > 1.0f * 1e12) {
-        std::cout << ops / 1e12 << "TFLOPS" << std::endl;
-    } else if (ops > 1.0f * 1e9) {
-        std::cout << ops / 1e9 << "GFLOPS" << std::endl;
-    } else if (ops > 1.0f * 1e6) {
-        std::cout << ops / 1e6 << "MFLOPS" << std::endl;
-    } else if (ops > 1.0f * 1e3) {
-        std::cout << ops / 1e3 << "KFLOPS" << std::endl;
-    } else {
-        std::cout << ops << "FLOPS" << std::endl;
-    }
+    vkDestroyInstance(instance, nullptr);
 
-    OpVerifyWork(shader, num_element);
-    OpDestroyHandles(shader, instance);
     unloadLibrary(vklib.lib);
     return 0;
 }
