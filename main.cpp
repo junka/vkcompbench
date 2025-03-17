@@ -647,8 +647,8 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
     T *bData = static_cast<T *>(bptr);
     if constexpr (std::is_same_v<T, float>) {
         for (auto i = 0; i < num_element; i++) {
-            aData[i] = float(i % 9) * 0.1f;
-            bData[i] = float(i % 5) * 1.f;
+            aData[i] = float((i % 9)+1) * 0.1f;
+            bData[i] = float((i % 5)+1) * 1.f;
         }
     } else if constexpr (std::is_same_v<T, int>) {
         for (auto i = 0; i < num_element; i++) {
@@ -720,8 +720,6 @@ void OpVerifyWork(struct ComputeShader &shader, const int num_element)
                 std::cout << "Verification failed at index " << i << std::endl;
                 std::cout << "Expected: " << float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f)) << "\t";
                 std::cout << "Got: " << rData[i] << std::endl;
-                // std::cout << "a: " << aData[i] << std::endl;
-                // std::cout << "b: " << bData[i] << std::endl;
                 break;
             }
         }
@@ -986,6 +984,31 @@ void unloadLibrary(void *lib) {
     dlclose(lib);
 }
 
+void OpBenchmarkResult(const char *name, double duration, uint64_t num_element, uint64_t loop_count)
+{
+    std::cout << "Testcase: " << name << "\t";
+    std::cout << "Duration: " << duration << "s" << "\t";
+    const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
+    double ops = numOps / duration;
+    std::cout << "NumOps: " << ops << std::endl;
+    std::cout << "Throughput: ";
+    std::string deli = "";
+    if (!std::strcmp(name, "fp32")) {
+        deli = "FL";
+    }
+    if (ops > 1.0f * 1e12) {
+        std::cout << ops / 1e12 << " T" << deli << "OPS" << std::endl;
+    } else if (ops > 1.0f * 1e9) {
+        std::cout << ops / 1e9 << " G" << deli << "OPS" << std::endl;
+    } else if (ops > 1.0f * 1e6) {
+        std::cout << ops / 1e6 << " M" << deli << "OPS" << std::endl;
+    } else if (ops > 1.0f * 1e3) {
+        std::cout << ops / 1e3 << " K" << deli << "OPS" << std::endl;
+    } else {
+        std::cout << ops << deli << "OPS" << std::endl;
+    }
+}
+
 int main() {
 
     vklib.symbols = loadLibrary();
@@ -1064,24 +1087,7 @@ int main() {
         } else if (std::strcmp(testcases[i].name,"int32")==0) {
             OpVerifyWork<int>(shader, num_element);
         }
-
-        std::cout << "Testcase: " << testcases[i].name << "\t";
-        std::cout << "Duration: " << duration << "s" << "\t";
-        const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
-        double ops = numOps / duration;
-        std::cout << "NumOps: " << ops << std::endl;
-        std::cout << "Throughput: ";
-        if (ops > 1.0f * 1e12) {
-            std::cout << ops / 1e12 << " TFLOPS" << std::endl;
-        } else if (ops > 1.0f * 1e9) {
-            std::cout << ops / 1e9 << " GFLOPS" << std::endl;
-        } else if (ops > 1.0f * 1e6) {
-            std::cout << ops / 1e6 << " MFLOPS" << std::endl;
-        } else if (ops > 1.0f * 1e3) {
-            std::cout << ops / 1e3 << " KFLOPS" << std::endl;
-        } else {
-            std::cout << ops << " FLOPS" << std::endl;
-        }
+        OpBenchmarkResult(testcases[i].name, duration, num_element, loop_count);
         OpDestroyShader(shader);
     }
 
