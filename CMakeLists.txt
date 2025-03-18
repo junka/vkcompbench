@@ -26,6 +26,9 @@ set(SHADER_FILES
     benchmark_fp64.comp
     benchmark_int32.comp
     benchmark_fp32.comp
+    benchmark_int16.comp
+    benchmark_fp16.comp
+    benchmark_int8.comp
 )
 
 foreach(SHADER_FILE ${SHADER_FILES})
