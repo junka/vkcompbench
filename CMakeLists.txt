@@ -34,6 +34,9 @@ set(SHADER_FILES
     benchmark_int16.comp
     benchmark_fp16.comp
     benchmark_int8.comp
+    benchmark_int8dot.comp
+    benchmark_int8dotaccsat.comp
+    benchmark_int8dot4x8packed.comp
 )
 
 foreach(SHADER_FILE ${SHADER_FILES})

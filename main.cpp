@@ -1,10 +1,11 @@
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <type_traits>
-#include <utility>
 #include <vector>
+#include <iomanip>
 
 #include <dlfcn.h>
 
@@ -13,19 +14,93 @@
 
 #include "benchmark.h"
 
-struct VulkanLib {
+class VulkanLib {
+private:
     void *lib;
+public:
     std::unique_ptr<std::map<std::string, void *>> symbols;
+    VulkanLib() {
+    symbols = std::make_unique<std::map<std::string, void *>>();
+        const char *const name = "libvulkan.so.1";
+
+        lib = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
+        if (!lib) {
+            std::cerr << "Failed to load library " << name << "," << dlerror() << std::endl;
+            return ;
+        }
+        const char *func_symbols[] = {
+            "vkEnumerateInstanceVersion",
+            "vkEnumerateInstanceLayerProperties",
+            "vkCreateInstance",
+            "vkEnumerateInstanceExtensionProperties",
+            "vkGetInstanceProcAddr",
+            "vkMapMemory",
+            "vkUnmapMemory",
+            "vkGetBufferMemoryRequirements",
+            "vkGetPhysicalDeviceMemoryProperties",
+            "vkAllocateMemory",
+            "vkAllocateCommandBuffers",
+            "vkBindBufferMemory",
+            "vkCmdBindPipeline",
+            "vkCmdDispatch",
+            "vkCmdWriteTimestamp",
+            "vkCmdBindDescriptorSets",
+            "vkCmdResetQueryPool",
+            "vkBeginCommandBuffer",
+            "vkEndCommandBuffer",
+            "vkQueueSubmit",
+            "vkQueueWaitIdle",
+            "vkCreateBuffer",
+            "vkCreateQueryPool",
+            "vkCreateDescriptorPool",
+            "vkAllocateDescriptorSets",
+            "vkUpdateDescriptorSets",
+            "vkCreateCommandPool",
+            "vkCreateComputePipelines",
+            "vkCreateDevice",
+            "vkGetDeviceQueue",
+            "vkCreateDescriptorSetLayout",
+            "vkCreatePipelineLayout",
+            "vkDestroyBuffer",
+            "vkDestroyQueryPool",
+            "vkDestroyDescriptorPool",
+            "vkDestroyPipeline",
+            "vkDestroyPipelineLayout",
+            "vkDestroyDescriptorSetLayout",
+            "vkDestroyDevice",
+            "vkDestroyInstance",
+            "vkGetQueryPoolResults",
+            "vkCreateShaderModule",
+            "vkDestroyShaderModule",
+            "vkDestroyCommandPool",
+            "vkFreeMemory",
+            "vkGetPhysicalDeviceQueueFamilyProperties",
+            "vkGetPhysicalDeviceProperties2",
+            "vkEnumeratePhysicalDevices",
+            "vkEnumerateDeviceExtensionProperties",
+            "vkResetCommandBuffer",
+            "vkGetPhysicalDeviceFeatures",
+            "vkGetPhysicalDeviceFeatures2"
+        };
+        for (auto sym : func_symbols) {
+            void *func = dlsym(lib, sym);
+            if (!func) {
+                std::cerr << "Failed to load symbol " << sym << "," << dlerror() << std::endl;
+            }
+            (*symbols)[sym] = func;
+        }
+    }
+    ~VulkanLib() {
+        dlclose(lib);
+    }
+
 };
 
-struct VulkanLib vklib;
-
+VulkanLib vklib;
 #define OP_GET_FUNC(name) \
     auto name = reinterpret_cast<PFN_##name>(vklib.symbols->at(#name)); \
     if (!name) \
         std::cout << "fail to get function " << #name << std::endl
-
-
 
 class ComputeBuffer {
 public:
@@ -37,6 +112,8 @@ public:
 
 class ComputeDevice {
 private:
+    std::vector<VkExtensionProperties> ext_properties;
+    VkPhysicalDeviceProperties deviceProperties;
     void checkDeviceDataTypeFeatures(void)
     {
         VkPhysicalDeviceFeatures deviceFeatures = {};
@@ -66,22 +143,31 @@ private:
         int8 = float16Int8Features.shaderInt8;
 #if VK_KHR_shader_integer_dot_product
         dot = integerDotProductFeatures.shaderIntegerDotProduct;
+#else
+        dot = false;
 #endif
     }
 
     void checkDeviceExtension(void)
     {
-        uint32_t _extensionCount = 0;
-
+        uint32_t extensionCount = 0;
         OP_GET_FUNC(vkEnumerateDeviceExtensionProperties);
-        vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &_extensionCount, NULL);
-
-        std::vector<VkExtensionProperties> extProps(_extensionCount);
-
-        vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &_extensionCount, extProps.data());
-        for (uint32_t i = 0; i < _extensionCount; i++) {
-            std::cout << extProps[i].extensionName << std::endl;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &extensionCount, NULL);
+        ext_properties.resize(extensionCount);
+        vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &extensionCount, ext_properties.data());
+        // std::cout << "Device Extensions:" << std::endl;
+        // for (uint32_t i = 0; i < extensionCount; i++) {
+        //     std::cout << ext_properties[i].extensionName << ":" << ext_properties[i].specVersion << std::endl;
+        // }
+    }
+    bool checkDeviceExtensionFeature(const char *name)
+    {
+        for (auto ext : ext_properties) {
+            if (std::string(ext.extensionName).compare(name) == 0) {
+                return true;
+            }
         }
+        return false;
     }
 #if VK_KHR_shader_integer_dot_product
     void check_shader_integer_dot_product_support() {
@@ -97,27 +183,9 @@ private:
         vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
 
         // Check for supported integer dot product features
-        std::cout << "Shader Integer Dot Product Properties:" << std::endl;
-        std::cout << "  Integer Dot Product Supported: " << (integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated ? "Yes" : "No") << std::endl;
-        std::cout << "  Integer Dot Product Accelerated Types: " << std::endl;
-        if (integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated) {
-            std::cout << "    8-bit Unsigned Integer Dot Product Accelerated" << std::endl;
-        }
-        if (integerDotProductProperties.integerDotProduct8BitSignedAccelerated) {
-            std::cout << "    8-bit Signed Integer Dot Product Accelerated" << std::endl;
-        }
-        if (integerDotProductProperties.integerDotProduct8BitMixedSignednessAccelerated) {
-            std::cout << "    8-bit Mixed Signedness Integer Dot Product Accelerated" << std::endl;
-        }
-        if (integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated) {
-            std::cout << "    4x8-bit Packed Unsigned Integer Dot Product Accelerated" << std::endl;
-        }
-        if (integerDotProductProperties.integerDotProduct4x8BitPackedSignedAccelerated) {
-            std::cout << "    4x8-bit Packed Signed Integer Dot Product Accelerated" << std::endl;
-        }
-        if (integerDotProductProperties.integerDotProduct4x8BitPackedMixedSignednessAccelerated) {
-            std::cout << "    4x8-bit Packed Mixed Signedness Integer Dot Product Accelerated" << std::endl;
-        }
+        int8dot = integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated;
+        int8dot4x8packed = integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated;
+        int8dotaccsat = integerDotProductProperties.integerDotProductAccumulatingSaturating8BitUnsignedAccelerated;
     }
 #endif
     void getDeviceTimeLimits(void)
@@ -131,44 +199,104 @@ private:
         properties2.pNext = &subgroup_properties;
         OP_GET_FUNC(vkGetPhysicalDeviceProperties2);
         vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
-        timestampPeriod = properties2.properties.limits.timestampPeriod;
-        std::cout << "GPU " << properties2.properties.deviceName << std::endl;
+        deviceProperties = properties2.properties;
+        timestampPeriod = deviceProperties.limits.timestampPeriod;
+        
+        std::cout << "GPU " << deviceProperties.deviceName << std::endl;
     }
 
     VkResult createDevice(std::vector<const char *> enabledLayerNames)
     {
+        std::vector<uintptr_t> enabledFeatures;
         std::vector<const char *> enabledExtensions;
         VkPhysicalDeviceFeatures features = {};
+        features.robustBufferAccess = VK_TRUE;
         if (int64)
             features.shaderInt64 = VK_TRUE;
         if (fp64)
             features.shaderFloat64 = VK_TRUE;
         if (int16)
             features.shaderInt16 = VK_TRUE;
+
         VkPhysicalDeviceFloat16Int8FeaturesKHR float16Int8Features = {};
         float16Int8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT16_INT8_FEATURES_KHR;
 
         VkPhysicalDevice8BitStorageFeatures storage8bitFeatures = {};
         storage8bitFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
         storage8bitFeatures.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+        storage8bitFeatures.storageBuffer8BitAccess = VK_TRUE;
+
+#ifdef VK_KHR_16bit_storage
         VkPhysicalDevice16BitStorageFeatures storage16bitFeatures = {};
         storage16bitFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
         storage16bitFeatures.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+        storage16bitFeatures.storageBuffer16BitAccess = VK_TRUE;
+        storage16bitFeatures.storageInputOutput16 = VK_TRUE;
+#elif defined VK_VERSION_1_1
+        VkPhysicalDeviceVulkan11Features storage16bitFeatures = {};
+        storage16bitFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+        storage16bitFeatures.storageBuffer16BitAccess = VK_TRUE;
+        storage16bitFeatures.storageInputOutput16 = VK_TRUE;
+        storage16bitFeatures.uniformAndStorageBuffer16BitAccess = VK_TRUE;
+#endif
+
+#ifdef VK_KHR_shader_integer_dot_product
+        VkPhysicalDeviceShaderIntegerDotProductFeatures shaderIntegerDotProductFeatures = {};
+        shaderIntegerDotProductFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR;
+        shaderIntegerDotProductFeatures.shaderIntegerDotProduct = VK_TRUE;
+#elif defined VK_VERSION_1_3
+        VkPhysicalDeviceVulkan13Features features13 = {};
+        features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        features13.shaderIntegerDotProduct = VK_TRUE;
+#endif
         if (int8) {
             float16Int8Features.shaderInt8 = VK_TRUE;
-            enabledExtensions.push_back(VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
-            float16Int8Features.pNext = &storage8bitFeatures;
+            if (checkDeviceExtensionFeature(VK_KHR_8BIT_STORAGE_EXTENSION_NAME)) {
+                enabledExtensions.push_back(VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
+                enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&storage8bitFeatures));
+            }
         }
         if (fp16) {
             float16Int8Features.shaderFloat16 = VK_TRUE;
-            enabledExtensions.push_back(VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
-            if (!float16Int8Features.pNext)
-                float16Int8Features.pNext = &storage16bitFeatures;
-            else
-                storage8bitFeatures.pNext = &storage16bitFeatures;
+            if (checkDeviceExtensionFeature(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
+                enabledExtensions.push_back(VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
+                if (deviceProperties.vendorID != 4318) {
+                    // tested on Nvidia A2000, it supports 16bit storage feature but did not need to enable it
+                    // enable it will cause validation error VK_ERROR_FEATURE_NOT_PRESENT
+                    enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&storage16bitFeatures));
+                }
+            }
         }
         if (int8 || fp16) {
-            enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            if (checkDeviceExtensionFeature(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
+                enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&float16Int8Features));
+                enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+            }
+        }
+        if (dot) {
+#ifdef VK_KHR_shader_integer_dot_product
+            if (checkDeviceExtensionFeature(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME)) {
+                enabledExtensions.push_back(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME);
+                enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&shaderIntegerDotProductFeatures));
+            }
+#elif defined VK_VERSION_1_3
+            enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&features13));
+#endif
+        }
+
+        struct GeneralFeature {
+            VkStructureType sType;
+            void*     pNext;
+        };
+        void* pFirst = nullptr;
+        if (enabledFeatures.size() > 0) {
+            pFirst = reinterpret_cast<void *>(enabledFeatures[0]);
+            struct GeneralFeature* ptr = reinterpret_cast<struct GeneralFeature*>(pFirst);
+            for (size_t i = 1; i < enabledFeatures.size(); i++) {
+                struct GeneralFeature* feat = reinterpret_cast<struct GeneralFeature*>(enabledFeatures[i]);
+                ptr->pNext = feat;
+                ptr = feat;
+            }
         }
 
         VkDeviceQueueCreateInfo queueCreateInfo = {};
@@ -187,7 +315,7 @@ private:
         deviceCreateInfo.pEnabledFeatures = &features;
         deviceCreateInfo.enabledExtensionCount = enabledExtensions.size();
         deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
-        deviceCreateInfo.pNext = &float16Int8Features;
+        deviceCreateInfo.pNext = pFirst;
 
         OP_GET_FUNC(vkCreateDevice);
         VkResult error = vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device);
@@ -207,13 +335,40 @@ public:
         checkDeviceDataTypeFeatures();
         checkDeviceExtension();
         getDeviceTimeLimits();
-        if (createDevice(enabledLayerNames) != VK_SUCCESS) {
-            std::cout << "Failed to create device" << std::endl;
+        VkResult err = createDevice(enabledLayerNames);
+        if (err != VK_SUCCESS) {
+            std::string errstrings[] = {
+                "VK_ERROR_OUT_OF_HOST_MEMORY",
+                "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+                "VK_ERROR_INITIALIZATION_FAILED",
+                "VK_ERROR_DEVICE_LOST",
+                "VK_ERROR_EXTENSION_NOT_PRESENT",
+                "VK_ERROR_FEATURE_NOT_PRESENT",
+                "VK_ERROR_TOO_MANY_OBJECTS",
+            };
+            int index = 0;
+            if (err == VK_ERROR_OUT_OF_HOST_MEMORY) {
+                index = 0;
+            } else if (err == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+                index = 1;
+            } else if (err == VK_ERROR_INITIALIZATION_FAILED) {
+                index = 2;
+            } else if (err == VK_ERROR_DEVICE_LOST) {
+                index = 3;
+            } else if (err ==VK_ERROR_EXTENSION_NOT_PRESENT) {
+                index = 4;
+            } else if (err == VK_ERROR_FEATURE_NOT_PRESENT) {
+                index = 5;
+            } else if (err == VK_ERROR_TOO_MANY_OBJECTS) {
+                index = 6;
+            }
+            std::cout << "Failed to create device " << errstrings[index] << std::endl;
             throw 1;
         }
         getDeviceQueue();
 #if VK_KHR_shader_integer_dot_product
-        check_shader_integer_dot_product_support();
+        if (dot)
+            check_shader_integer_dot_product_support();
 #endif
     };
     ~ComputeDevice() {
@@ -235,6 +390,11 @@ public:
     bool fp16;
     bool int8;
     bool dot;
+#ifdef VK_KHR_shader_integer_dot_product
+    bool int8dot;
+    bool int8dot4x8packed;
+    bool int8dotaccsat;
+#endif
 
 };
 
@@ -283,17 +443,17 @@ VkInstance OpCreateInstance(std::vector<const char *> &enabledLayerNames) {
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
 
-    //enable debug and validation layers
+    // enable debug and validation layers
     instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
     instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
 #if VK_EXT_debug_utils
     std::vector<const char *> enabledExtensionNames{
         VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-        };
+    };
 #else
     std::vector<const char *> enabledExtensionNames{
         VK_EXT_DEBUG_REPORT_EXTENSION_NAME
-        };
+    };
 #endif
     instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
     instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
@@ -1056,94 +1216,17 @@ void checkVulkanVersion()
     // std::cout << "version " << VK_VERSION_MAJOR(version) << "." << VK_VERSION_MINOR(version) << "." << VK_VERSION_PATCH(version) << std::endl;
 }
 
-std::unique_ptr<std::map<std::string, void *>> loadLibrary(void) {
-    std::unique_ptr<std::map<std::string, void *>> funcptr = std::make_unique<std::map<std::string, void *>>();
-    const char *const name = "libvulkan.so.1";
-
-    void *lib = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
-    if (!lib) {
-        std::cerr << "Failed to load library " << name << "," << dlerror() << std::endl;
-        return nullptr;
-    }
-    vklib.lib = lib;
-    const char *func_symbols[] = {
-        "vkEnumerateInstanceVersion",
-        "vkEnumerateInstanceLayerProperties",
-        "vkCreateInstance",
-        "vkEnumerateInstanceExtensionProperties",
-        "vkGetInstanceProcAddr",
-        "vkMapMemory",
-        "vkUnmapMemory",
-        "vkGetBufferMemoryRequirements",
-        "vkGetPhysicalDeviceMemoryProperties",
-        "vkAllocateMemory",
-        "vkAllocateCommandBuffers",
-        "vkBindBufferMemory",
-        "vkCmdBindPipeline",
-        "vkCmdDispatch",
-        "vkCmdWriteTimestamp",
-        "vkCmdBindDescriptorSets",
-        "vkCmdResetQueryPool",
-        "vkBeginCommandBuffer",
-        "vkEndCommandBuffer",
-        "vkQueueSubmit",
-        "vkQueueWaitIdle",
-        "vkCreateBuffer",
-        "vkCreateQueryPool",
-        "vkCreateDescriptorPool",
-        "vkAllocateDescriptorSets",
-        "vkUpdateDescriptorSets",
-        "vkCreateCommandPool",
-        "vkCreateComputePipelines",
-        "vkCreateDevice",
-        "vkGetDeviceQueue",
-        "vkCreateDescriptorSetLayout",
-        "vkCreatePipelineLayout",
-        "vkDestroyBuffer",
-        "vkDestroyQueryPool",
-        "vkDestroyDescriptorPool",
-        "vkDestroyPipeline",
-        "vkDestroyPipelineLayout",
-        "vkDestroyDescriptorSetLayout",
-        "vkDestroyDevice",
-        "vkDestroyInstance",
-        "vkGetQueryPoolResults",
-        "vkCreateShaderModule",
-        "vkDestroyShaderModule",
-        "vkDestroyCommandPool",
-        "vkFreeMemory",
-        "vkGetPhysicalDeviceQueueFamilyProperties",
-        "vkGetPhysicalDeviceProperties2",
-        "vkEnumeratePhysicalDevices",
-        "vkEnumerateDeviceExtensionProperties",
-        "vkResetCommandBuffer",
-        "vkGetPhysicalDeviceFeatures",
-        "vkGetPhysicalDeviceFeatures2"
-    };
-    for (auto sym : func_symbols) {
-        void *func = dlsym(lib, sym);
-        if (!func) {
-            std::cerr << "Failed to load symbol " << sym << "," << dlerror() << std::endl;
-        }
-        (*funcptr)[sym] = func;
-    }
-    return funcptr;
-}
-
-void unloadLibrary(void *lib) {
-    dlclose(lib);
-}
 
 void OpBenchmarkResult(std::string name, double duration, uint64_t num_element, uint64_t loop_count, std::pair<float, float> result)
 {
-    std::cout << "Testcase: " << name << "\t";
+    std::cout << "Testcase: " << std::left << std::setw(20) << name << "\t";
     std::cout << "Duration: " << duration << "s" << "\t";
     const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
     double ops = numOps / duration;
-    std::cout << "NumOps: " << ops << "\t";
+    // std::cout << "NumOps: " << ops << "\t";
     std::cout << "Throughput: ";
     std::string deli = "";
-    if (!name.compare("fp32")) {
+    if (name.find("fp")!= std::string::npos) {
         deli = "FL";
     }
     if (ops > 1.0f * 1e12) {
@@ -1204,8 +1287,6 @@ void OpRunShader(std::shared_ptr<ComputeDevice> dev,
 
 int main() {
 
-    vklib.symbols = loadLibrary();
-
     std::vector<const char *> enabledLayerNames;
 
     checkVulkanVersion();
@@ -1242,6 +1323,14 @@ int main() {
             {"fp16", shaderfp16_size, shaderfp16_code, dev->fp16},
 #endif
             {"int8", shaderint8_size, shaderint8_code, dev->int8},
+#ifdef VK_KHR_shader_integer_dot_product
+            {"int8dot", shaderint8dot_size, shaderint8dot_code,
+                (dev->int8 && dev->dot && dev->int8dot)},
+            {"int8dotaccsat", shaderint8dotaccsat_size, shaderint8dotaccsat_code,
+                (dev->int8 && dev->dot && dev->int8dotaccsat)},
+            {"int8dot4x8packed", shaderint8dot4x8packed_size, shaderint8dot4x8packed_code,
+                (dev->int8 && dev->dot && dev->int8dot4x8packed)},
+#endif
         };
         for (size_t i = 0; i < sizeof(testcases) / sizeof(testcases[0]); i++) {
             if (!testcases[i].enable) {
@@ -1263,7 +1352,10 @@ int main() {
                 OpRunShader<_Float64>(dev, layoutBindings, testcases[i]);
             } else if (testcases[i].name.compare("int16")==0) {
                 OpRunShader<uint16_t>(dev, layoutBindings, testcases[i]);
-            } else if (testcases[i].name.compare("int8")==0) {
+            } else if (!testcases[i].name.compare("int8")
+                       ||!testcases[i].name.compare("int8dot")
+                       ||!testcases[i].name.compare("int8dotaccsat")
+                       ||!testcases[i].name.compare("int8dot4x8packed")) {
                 OpRunShader<uint8_t>(dev, layoutBindings, testcases[i]);
             }
             
@@ -1291,6 +1383,5 @@ int main() {
     }
     vkDestroyInstance(instance, nullptr);
 
-    unloadLibrary(vklib.lib);
     return 0;
 }
