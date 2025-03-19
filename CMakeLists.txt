@@ -7,7 +7,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/)
-
+include(check_float16)
+check_float16(HAVE_FLOAT16)
+if(HAVE_FLOAT16)
+    message(STATUS "_Float16 is compiled." ${HAVE_FLOAT16})
+    add_definitions(-DHAVE_FLOAT16)
+endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g -Wall -Wextra -Werror -fno-omit-frame-pointer")
 
 find_package(Vulkan REQUIRED)

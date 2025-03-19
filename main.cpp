@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <dlfcn.h>
@@ -11,7 +12,6 @@
 #include <vulkan/vulkan.h>
 
 #include "benchmark.h"
-
 
 struct VulkanLib {
     void *lib;
@@ -770,10 +770,14 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
 
     T *aData = static_cast<T *>(aptr);
     T *bData = static_cast<T *>(bptr);
-    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>) {
+    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>
+#ifdef HAVE_FLOAT16
+                  || std::is_same_v<T, _Float16>
+#endif
+                  ) {
         for (auto i = 0; i < num_element; i++) {
-            aData[i] = float((i % 9)+1) * 0.1f;
-            bData[i] = float((i % 5)+1) * 1.f;
+            aData[i] = T((i % 9)+1) * T(0.1f);
+            bData[i] = T((i % 5)+1) * T(1.f);
         }
     } else if constexpr (std::is_same_v<T, int> || std::is_same_v<T, int64_t> ||
                          std::is_same_v<T, uint16_t> || std::is_same_v<T, uint8_t>) {
@@ -816,10 +820,11 @@ void OpSubmitWork(struct ComputeShader &shader, const int num_element)
 }
 
 template<typename T>
-void OpVerifyWork(struct ComputeShader &shader, const int num_element, int loop_count)
+std::pair<float, float> OpVerifyWork(struct ComputeShader &shader, const int num_element, int loop_count)
 {
+    float diffmax = 0.0f;
+    float precision = 0.0f;
     VkDevice device = shader.device->device;
-
     VkDeviceSize size = num_element * sizeof(T);
 
     void *cptr = nullptr;
@@ -840,18 +845,29 @@ void OpVerifyWork(struct ComputeShader &shader, const int num_element, int loop_
 
             }
         }
-    } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>) {
+    } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>
+#ifdef HAVE_FLOAT16
+                  || std::is_same_v<T, _Float16>
+#endif
+                        ) {
         for (auto i  = 0; i < num_element; i++) {
-            if (std::fabs(rData[i] - float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f))) > 0.01f) {
+            float diff = std::fabs(rData[i] - float((i % 5) + 1) * 1.f * (1.f / (1.f - float((i % 9) + 1) * (0.1f))));
+            if (diffmax < diff) {
+                diffmax = diff;
+                precision = diff * 100.0 /float((i % 5) + 1) * 1.f * (1.f / (1.f - float((i % 9) + 1) * (0.1f)));
+            }
+            // relax the tolerance for float16
+            if (diff > 0.2f) {
                 std::cout << "Verification failed at index " << i << std::endl;
-                std::cout << "Expected: " << float((i % 5) + 1) * 1.f *(1.f / (1.f - float((i % 9) + 1) * 0.1f)) << "\t";
-                std::cout << "Got: " << rData[i] << std::endl;
+                std::cout << "Expected: " << float((i % 5) + 1) * (1.f) * (1.f / (1.f - float((i % 9) + 1) * 0.1f)) << "\t";
+                std::cout << "Got: " << float(rData[i]) << std::endl;
                 break;
             }
         }
     }
 
     vkUnmapMemory(device, shader.buffers[2].memory);
+    return std::make_pair(diffmax, precision);
 }
 
 void OpDestroyShader(struct ComputeShader &shader)
@@ -1118,29 +1134,34 @@ void unloadLibrary(void *lib) {
     dlclose(lib);
 }
 
-void OpBenchmarkResult(std::string name, double duration, uint64_t num_element, uint64_t loop_count)
+void OpBenchmarkResult(std::string name, double duration, uint64_t num_element, uint64_t loop_count, std::pair<float, float> result)
 {
     std::cout << "Testcase: " << name << "\t";
     std::cout << "Duration: " << duration << "s" << "\t";
     const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
     double ops = numOps / duration;
-    std::cout << "NumOps: " << ops << std::endl;
+    std::cout << "NumOps: " << ops << "\t";
     std::cout << "Throughput: ";
     std::string deli = "";
     if (!name.compare("fp32")) {
         deli = "FL";
     }
     if (ops > 1.0f * 1e12) {
-        std::cout << ops / 1e12 << " T" << deli << "OPS" << std::endl;
+        std::cout << ops / 1e12 << " T";
     } else if (ops > 1.0f * 1e9) {
-        std::cout << ops / 1e9 << " G" << deli << "OPS" << std::endl;
+        std::cout << ops / 1e9 << " G";
     } else if (ops > 1.0f * 1e6) {
-        std::cout << ops / 1e6 << " M" << deli << "OPS" << std::endl;
+        std::cout << ops / 1e6 << " M";
     } else if (ops > 1.0f * 1e3) {
-        std::cout << ops / 1e3 << " K" << deli << "OPS" << std::endl;
+        std::cout << ops / 1e3 << " K";
     } else {
-        std::cout << ops << deli << "OPS" << std::endl;
+        std::cout << ops;
     }
+    std::cout << deli << "OPS";
+    if (result.first != 0.0f) {
+        std::cout << "\tAccuracy: " << result.first << "(" << result.second <<"%)";
+    }
+    std::cout << std::endl;
 }
 
 
@@ -1176,8 +1197,8 @@ void OpRunShader(std::shared_ptr<ComputeDevice> dev,
         duration = std::fmin(OpGetTimestamp(shader), duration);
         vkResetCommandBuffer(shader.commandBuffer, 0);
     }
-    OpVerifyWork<T>(shader, num_element, loop_count);
-    OpBenchmarkResult(t.name, duration, num_element, loop_count);
+    std::pair<float, float> r = OpVerifyWork<T>(shader, num_element, loop_count);
+    OpBenchmarkResult(t.name, duration, num_element, loop_count, r);
     OpDestroyShader(shader);
 }
 
@@ -1217,7 +1238,9 @@ int main() {
             {"int32", shaderint32_size, shaderint32_code,true},
             {"fp32", shaderfp32_size, shaderfp32_code, true},
             {"int16", shaderint16_size, shaderint16_code, dev->int16},
+#ifdef HAVE_FLOAT16
             {"fp16", shaderfp16_size, shaderfp16_code, dev->fp16},
+#endif
             {"int8", shaderint8_size, shaderint8_code, dev->int8},
         };
         for (size_t i = 0; i < sizeof(testcases) / sizeof(testcases[0]); i++) {
@@ -1228,8 +1251,10 @@ int main() {
 
             if (testcases[i].name.compare("fp32")==0) {
                 OpRunShader<float>(dev, layoutBindings, testcases[i]);
+#ifdef HAVE_FLOAT16
             } else if (testcases[i].name.compare("fp16")==0) {
                 OpRunShader<_Float16>(dev, layoutBindings, testcases[i]);
+#endif
             } else if (testcases[i].name.compare("int32")==0) {
                 OpRunShader<int>(dev, layoutBindings, testcases[i]);
             } else if (testcases[i].name.compare("int64")==0) {
