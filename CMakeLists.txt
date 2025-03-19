@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
-project(VulkanBenchmark)
+project(vkcompbench)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -10,13 +10,11 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/)
 include(check_float16)
 check_float16(HAVE_FLOAT16)
 if(HAVE_FLOAT16)
-    message(STATUS "_Float16 is compiled." ${HAVE_FLOAT16})
     add_definitions(-DHAVE_FLOAT16)
 endif()
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g -Wall -Wextra -Werror -fno-omit-frame-pointer")
-
 find_package(Vulkan REQUIRED)
-
 
 # Compile WGSL to SPIR-V
 # add_custom_command(
@@ -54,7 +52,7 @@ foreach(SHADER_FILE ${SHADER_FILES})
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv
         COMMENT "Generating ${SHADER_NAME}.h from ${SHADER_NAME}.spv"
     )
-
+    
     list(APPEND SPIRV_FILES ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv)
     list(APPEND HEADER_FILES ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.h)
 
@@ -73,16 +71,12 @@ add_custom_command(
 add_custom_target(combine_headers DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/benchmark.h)
 add_dependencies(generate_headers combine_headers)
 
-
-
 include_directories(${Vulkan_INCLUDE_DIRS})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
-add_executable(VulkanBenchmark main.cpp)
-
+add_executable(vkcompbench main.cpp)
 
 add_dependencies(generate_headers compile_shaders)
-add_dependencies(VulkanBenchmark generate_headers)
+add_dependencies(vkcompbench generate_headers)
 
-
-target_link_libraries(VulkanBenchmark PUBLIC ${CMAKE_DL_LIBS})
+target_link_libraries(vkcompbench PUBLIC ${CMAKE_DL_LIBS})
