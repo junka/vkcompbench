@@ -1,6 +1,4 @@
 #include <cmath>
-#include <csignal>
-#include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -125,7 +123,6 @@ private:
         float16Int8Features.pNext = &integerDotProductFeatures;
 #endif
 
-
         VkPhysicalDeviceFeatures2 features2 = {};
         features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         features2.pNext = &float16Int8Features;
@@ -190,7 +187,6 @@ private:
         OP(vkGetPhysicalDeviceProperties2)(physicalDevice, &properties2);
         deviceProperties = properties2.properties;
         this->timestampPeriod = deviceProperties.limits.timestampPeriod;
-        
         std::cout << "GPU " << deviceProperties.deviceName << std::endl;
     }
 
@@ -323,32 +319,15 @@ public:
         getDeviceTimeLimits();
         VkResult err = createDevice();
         if (err != VK_SUCCESS) {
-            std::string errstrings[] = {
-                "VK_ERROR_OUT_OF_HOST_MEMORY",
-                "VK_ERROR_OUT_OF_DEVICE_MEMORY",
-                "VK_ERROR_INITIALIZATION_FAILED",
-                "VK_ERROR_DEVICE_LOST",
-                "VK_ERROR_EXTENSION_NOT_PRESENT",
-                "VK_ERROR_FEATURE_NOT_PRESENT",
-                "VK_ERROR_TOO_MANY_OBJECTS",
-            };
-            int index = 0;
-            if (err == VK_ERROR_OUT_OF_HOST_MEMORY) {
-                index = 0;
-            } else if (err == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-                index = 1;
-            } else if (err == VK_ERROR_INITIALIZATION_FAILED) {
-                index = 2;
-            } else if (err == VK_ERROR_DEVICE_LOST) {
-                index = 3;
-            } else if (err ==VK_ERROR_EXTENSION_NOT_PRESENT) {
-                index = 4;
-            } else if (err == VK_ERROR_FEATURE_NOT_PRESENT) {
-                index = 5;
-            } else if (err == VK_ERROR_TOO_MANY_OBJECTS) {
-                index = 6;
-            }
-            std::cout << "Failed to create device " << errstrings[index] << std::endl;
+            std::map<int, std::string> errstrings;
+            errstrings[VK_ERROR_OUT_OF_HOST_MEMORY] = "VK_ERROR_OUT_OF_HOST_MEMORY";
+            errstrings[VK_ERROR_OUT_OF_DEVICE_MEMORY] = "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+            errstrings[VK_ERROR_INITIALIZATION_FAILED] = "VK_ERROR_INITIALIZATION_FAILED";
+            errstrings[VK_ERROR_DEVICE_LOST] = "VK_ERROR_DEVICE_LOST";
+            errstrings[VK_ERROR_EXTENSION_NOT_PRESENT] = "VK_ERROR_EXTENSION_NOT_PRESENT";
+            errstrings[VK_ERROR_FEATURE_NOT_PRESENT] = "VK_ERROR_FEATURE_NOT_PRESENT";
+            errstrings[VK_ERROR_TOO_MANY_OBJECTS] = "VK_ERROR_TOO_MANY_OBJECTS";
+            std::cout << "Failed to create device " << errstrings[err] << std::endl;
             throw 1;
         }
         getDeviceQueue();
@@ -524,23 +503,24 @@ private:
         if (error != VK_SUCCESS) {
             return VK_NULL_HANDLE;
         }
-        descriptorSetLayout = setLayout;
+        this->descriptorSetLayout = setLayout;
         return pipelineLayout;
     }
 
     VkResult OpCreatePipeline(std::vector<VkDescriptorSetLayoutBinding> &layoutBindings,
                                 uint32_t loop_count, const unsigned int code_size, const unsigned char *code)
     {
-        VkDevice device = computedevice->device;
+        VkDevice device = this->computedevice->device;
         VkShaderModule shaderModule = VK_NULL_HANDLE;
         VkResult error;
         VkPipeline pipeline = VK_NULL_HANDLE;
 
-        layout = OpCreatePipelineLayout(layoutBindings);
+        VkPipelineLayout layout = OpCreatePipelineLayout(layoutBindings);
         if (!layout) {
             std::cout << "failed to create pipeline layout!" << std::endl;
             return VK_ERROR_UNKNOWN;
         }
+        this->layout = layout;
 
         VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
         shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -587,18 +567,16 @@ private:
         }
 
         OP(vkDestroyShaderModule)(device, shaderModule, nullptr);
-
         this->pipeline = pipeline;
         return VK_SUCCESS;
     }
 
     VkResult OpCreateDescriptorPool(std::vector<VkDescriptorSetLayoutBinding> layoutBindings)
     {
-        VkDevice device = computedevice->device;
+        VkDevice device = this->computedevice->device;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
         VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
         descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
- 
         descriptorPoolCreateInfo.maxSets = 1;
         descriptorPoolCreateInfo.poolSizeCount = 1;
         VkDescriptorPoolSize poolSize = {};
@@ -613,14 +591,14 @@ private:
 
     VkResult OpAllocateDescriptorSets()
     {
-        VkDevice device = computedevice->device;
+        VkDevice device = this->computedevice->device;
         VkResult error;
 
         VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
         descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        descriptorSetAllocateInfo.descriptorPool = descriptorPool;
+        descriptorSetAllocateInfo.descriptorPool = this->descriptorPool;
         descriptorSetAllocateInfo.descriptorSetCount = 1;
-        descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
+        descriptorSetAllocateInfo.pSetLayouts = &this->descriptorSetLayout;
 
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         error = OP(vkAllocateDescriptorSets)(device, &descriptorSetAllocateInfo,
@@ -701,20 +679,20 @@ private:
 
     void OpDestroyShader()
     {
-        VkDevice device = computedevice->device;
+        VkDevice device = this->computedevice->device;
 
-        OP(vkFreeCommandBuffers)(device, commandPool, 1, &commandBuffer);
-        OP(vkDestroyCommandPool)(device, commandPool, nullptr);
+        OP(vkFreeCommandBuffers)(device, this->commandPool, 1, &this->commandBuffer);
+        OP(vkDestroyCommandPool)(device, this->commandPool, nullptr);
         
-        for (auto b : buffers) {
+        for (auto b : this->buffers) {
             delete b;
         }
 
-        OP(vkDestroyQueryPool)(device, queryPool, nullptr);
-        OP(vkDestroyDescriptorPool)(device, descriptorPool, nullptr);
-        OP(vkDestroyPipeline)(device, pipeline, nullptr);
-        OP(vkDestroyPipelineLayout)(device, layout, nullptr);
-        OP(vkDestroyDescriptorSetLayout)(device, descriptorSetLayout, nullptr);
+        OP(vkDestroyQueryPool)(device, this->queryPool, nullptr);
+        OP(vkDestroyDescriptorPool)(device, this->descriptorPool, nullptr);
+        OP(vkDestroyPipeline)(device, this->pipeline, nullptr);
+        OP(vkDestroyPipelineLayout)(device, this->layout, nullptr);
+        OP(vkDestroyDescriptorSetLayout)(device, this->descriptorSetLayout, nullptr);
     }
 
     void OpCreateQueryPool()
@@ -732,11 +710,10 @@ private:
 public:
     double OpGetTimestamp(void)
     {
-        VkQueryPool queryPool = this->queryPool;
         VkQueryResultFlags flags = VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT;
         uint64_t timestamps[2];
 
-        OP(vkGetQueryPoolResults)(computedevice->device, queryPool, 0, 2, 2 * sizeof(uint64_t),
+        OP(vkGetQueryPoolResults)(computedevice->device, this->queryPool, 0, 2, 2 * sizeof(uint64_t),
                             timestamps, sizeof(uint64_t), flags);
         return (timestamps[1] - timestamps[0]) * computedevice->timestampPeriod * 1e-9;
     }
@@ -780,7 +757,7 @@ public:
         return VK_SUCCESS;
     }
 
-    ComputeShader(std::shared_ptr<ComputeDevice> dev, std::vector<VkDescriptorSetLayoutBinding> layoutBindings,
+    explicit ComputeShader(std::shared_ptr<ComputeDevice> dev, std::vector<VkDescriptorSetLayoutBinding> layoutBindings,
                   const int code_size, const unsigned char *code, int loop_count, int num_element): computedevice(dev) {
         OpCreatePipeline(layoutBindings, loop_count, code_size, code);
         if (OpCreateBuffers(layoutBindings, num_element, sizeof(T))) {
@@ -900,7 +877,7 @@ public:
         }
 
         buffers[2]->unmapMemory();
-        return std::make_pair(diffmax, precision);
+        return {diffmax, precision};
     }
 
 private:
@@ -926,14 +903,16 @@ private:
 
     std::string findValidationLayerSupport() {
         uint32_t layerCount;
-
         OP(vkEnumerateInstanceLayerProperties)(&layerCount, nullptr);
 
         std::vector<VkLayerProperties> availableLayers(layerCount);
         OP(vkEnumerateInstanceLayerProperties)(&layerCount, availableLayers.data());
+        for (const auto& layerProperties : availableLayers) {
+            std::cout << "instance available layer: " << layerProperties.layerName << std::endl;
+        }
         for (auto layer : availableLayers) {
             // possible validation layers:
-            // VK_LAYER_KHRONOS_validation
+            // first try VK_LAYER_KHRONOS_validation
             // VK_LAYER_LUNARG_standard_validation
             if (std::string(layer.layerName).find("VK_LAYER_KHRONOS_validation") != std::string::npos) {
                 std::cout << "validation layer found " << layer.layerName << std::endl;
@@ -988,18 +967,18 @@ private:
         // enable debug and validation layers
         instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
         instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
+        
+        std::vector<const char *> enabledExtensionNames = {
 #if VK_EXT_debug_utils
-        std::vector<const char *> enabledExtensionNames{
             VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-        };
 #else
-        std::vector<const char *> enabledExtensionNames{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME
-        };
 #endif
-        instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
-        instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
-
+        };
+        if (enabledLayerNames.size() > 0) {
+            instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
+            instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
+        }
         VkInstance instance = VK_NULL_HANDLE;
         VkResult error = OP(vkCreateInstance)(&instanceCreateInfo, nullptr, &instance);
         if (error != VK_SUCCESS) {
@@ -1116,52 +1095,44 @@ public:
         return callback;
     }
 #endif
-    VkInstance getInstance() {
-        return instance;
-    }
-};
+    
+    std::pair<VkPhysicalDevice, uint32_t> getDeviceAndQeueue(void) {
+        VkResult error;
+        uint32_t count;
 
+        error = OP(vkEnumeratePhysicalDevices)(instance, &count, nullptr);
+        if (error != VK_SUCCESS) {
+            return { nullptr, 0};
+        }
+        std::vector<VkPhysicalDevice> physicalDevices(count);
+        error = OP(vkEnumeratePhysicalDevices)(instance, &count, physicalDevices.data());
+        if (error != VK_SUCCESS) {
+            return {nullptr, 0};
+        }
 
-std::unique_ptr<ComputeDevice> OpCreateDevice(VkInstance instance)
-{
-    VkResult error;
-    uint32_t count;
-
-    error = OP(vkEnumeratePhysicalDevices)(instance, &count, nullptr);
-    if (error != VK_SUCCESS) {
-        return nullptr;
-    }
-    std::vector<VkPhysicalDevice> physicalDevices(count);
-    error = OP(vkEnumeratePhysicalDevices)(instance, &count, physicalDevices.data());
-    if (error != VK_SUCCESS) {
-        return nullptr;
-    }
-
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    uint32_t queueFamilyIndex = 0;
-    for (auto device : physicalDevices) {
-        OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count, nullptr);
-        std::vector<VkQueueFamilyProperties> queueFamilyProperties(count);
-        OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count,
-                                                queueFamilyProperties.data());
-        uint32_t index = 0;
-        for (auto &properties : queueFamilyProperties) {
-            if (properties.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                physicalDevice = device;
-                queueFamilyIndex = index;
+        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+        uint32_t queueFamilyIndex = 0;
+        for (auto device : physicalDevices) {
+            OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count, nullptr);
+            std::vector<VkQueueFamilyProperties> queueFamilyProperties(count);
+            OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count,
+                                                    queueFamilyProperties.data());
+            uint32_t index = 0;
+            for (auto &properties : queueFamilyProperties) {
+                if (properties.queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                    physicalDevice = device;
+                    queueFamilyIndex = index;
+                    break;
+                }
+                index++;
+            }
+            if (physicalDevice) {
                 break;
             }
-            index++;
         }
-        if (physicalDevice) {
-            break;
-        }
+        return {physicalDevice, queueFamilyIndex};
     }
-
-    std::unique_ptr<ComputeDevice> dev = std::make_unique<ComputeDevice>(physicalDevice, queueFamilyIndex);
-    return dev;
-}
-
+};
 
 std::vector<VkDescriptorSetLayoutBinding> OpDescriptorSetLayoutBinding(void)
 {
@@ -1213,6 +1184,20 @@ void OpBenchmarkResult(std::string name, double duration, uint64_t num_element, 
     std::cout << std::endl;
 }
 
+enum testcase_type {
+    INT64,
+    FP64,
+    INT32,
+    FP32,
+    INT16,
+#ifdef HAVE_FLOAT16
+    FP16,
+#endif
+    INT8,
+    INT8DOT,
+    INT8DOTACCSAT,
+    INT8DOT4X8PACKED,
+};
 
 struct testcase {
     std::string name;
@@ -1227,7 +1212,6 @@ void OpRunShader(std::shared_ptr<ComputeDevice> dev,
 {
     const int num_element = 1024 * 1024;
     const uint32_t loop_count = 10000;
-
     ComputeShader<T> shader(dev, layoutBindings, t.code_size, t.code, loop_count, num_element);
 
     // OP_GET_FUNC(vkResetCommandBuffer);
@@ -1287,19 +1271,19 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
 
 int main(int argc, char **argv) {
     struct testcase testcases[] = {
-        {"int64", shaderint64_size, shaderint64_code, false},
-        {"fp64", shaderfp64_size, shaderfp64_code, false},
-        {"int32", shaderint32_size, shaderint32_code,true},
-        {"fp32", shaderfp32_size, shaderfp32_code, true},
-        {"int16", shaderint16_size, shaderint16_code, false},
+        [INT64] = {"int64", shaderint64_size, shaderint64_code, false},
+        [FP64] = {"fp64", shaderfp64_size, shaderfp64_code, false},
+        [INT32] = {"int32", shaderint32_size, shaderint32_code, true},
+        [FP32] = {"fp32", shaderfp32_size, shaderfp32_code, true},
+        [INT16] = {"int16", shaderint16_size, shaderint16_code, false},
 #ifdef HAVE_FLOAT16
-        {"fp16", shaderfp16_size, shaderfp16_code, false},
+        [FP16] = {"fp16", shaderfp16_size, shaderfp16_code, false},
 #endif
-        {"int8", shaderint8_size, shaderint8_code, false},
+        [INT8] = {"int8", shaderint8_size, shaderint8_code, false},
 #ifdef VK_KHR_shader_integer_dot_product
-        {"int8dot", shaderint8dot_size, shaderint8dot_code, false},
-        {"int8dotaccsat", shaderint8dotaccsat_size, shaderint8dotaccsat_code, false},
-        {"int8dot4x8packed", shaderint8dot4x8packed_size, shaderint8dot4x8packed_code, false},
+        [INT8DOT] = {"int8dot", shaderint8dot_size, shaderint8dot_code, false},
+        [INT8DOTACCSAT] = {"int8dotaccsat", shaderint8dotaccsat_size, shaderint8dotaccsat_code, false},
+        [INT8DOT4X8PACKED] = {"int8dot4x8packed", shaderint8dot4x8packed_size, shaderint8dot4x8packed_code, false},
 #endif
     };
 
@@ -1345,34 +1329,35 @@ int main(int argc, char **argv) {
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
 
     {
-        std::shared_ptr<ComputeDevice> dev = OpCreateDevice(vulkanInstance.getInstance());
-        std::map<std::string, std::function<void(struct testcase &)>> testFunctions = {
-            {"fp32", [&](struct testcase &t) { OpRunShader<float>(dev, layoutBindings, t); }},
-            {"int32", [&](struct testcase &t) { OpRunShader<int>(dev, layoutBindings, t); }},
-            {"int64", [&](struct testcase &t) { OpRunShader<int64_t>(dev, layoutBindings, t); }},
-            {"fp64", [&](struct testcase &t) { OpRunShader<_Float64>(dev, layoutBindings, t); }},
-            {"int16", [&](struct testcase &t) { OpRunShader<uint16_t>(dev, layoutBindings, t); }},
+        auto r = vulkanInstance.getDeviceAndQeueue();
+        auto dev = std::make_shared<ComputeDevice>(r.first, r.second);
+        std::function<void(struct testcase &)> testFunctions[] = {
+            [INT64] = [&](struct testcase &t) { OpRunShader<int64_t>(dev, layoutBindings, t); },
+            [FP64] = [&](struct testcase &t) { OpRunShader<_Float64>(dev, layoutBindings, t); },
+            [INT32] = [&](struct testcase &t) { OpRunShader<int>(dev, layoutBindings, t); },
+            [FP32] = [&](struct testcase &t) { OpRunShader<float>(dev, layoutBindings, t); },
+            [INT16] = [&](struct testcase &t) { OpRunShader<uint16_t>(dev, layoutBindings, t); },
 #ifdef HAVE_FLOAT16
-            {"fp16", [&](struct testcase &t) { OpRunShader<_Float16>(dev, layoutBindings, t); }},
+            [FP16] = [&](struct testcase &t) { OpRunShader<_Float16>(dev, layoutBindings, t); },
 #endif
-            {"int8", [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); }},
+            [INT8] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
 #ifdef VK_KHR_shader_integer_dot_product
-            {"int8dot", [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); }},
-            {"int8dotaccsat", [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); }},
-            {"int8dot4x8packed", [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); }},
+            [INT8DOT] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
+            [INT8DOTACCSAT] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
+            [INT8DOT4X8PACKED] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
 #endif
         };
-        testcases[0].enable = dev->int64;
-        testcases[1].enable = dev->fp64;
-        testcases[4].enable = dev->int16;
+        testcases[INT64].enable = dev->int64;
+        testcases[FP64].enable = dev->fp64;
+        testcases[INT16].enable = dev->int16;
 #ifdef HAVE_FLOAT16
-        testcases[5].enable = dev->fp16;
+        testcases[FP16].enable = dev->fp16;
 #endif
-        testcases[6].enable = dev->int8;
+        testcases[INT8].enable = dev->int8;
 #ifdef VK_KHR_shader_integer_dot_product
-        testcases[7].enable = (dev->int8 && dev->dot && dev->int8dot);
-        testcases[8].enable = (dev->int8 && dev->dot && dev->int8dotaccsat);
-        testcases[9].enable = (dev->int8 && dev->dot && dev->int8dot4x8packed);
+        testcases[INT8DOT].enable = (dev->int8 && dev->dot && dev->int8dot);
+        testcases[INT8DOTACCSAT].enable = (dev->int8 && dev->dot && dev->int8dotaccsat);
+        testcases[INT8DOT4X8PACKED].enable = (dev->int8 && dev->dot && dev->int8dot4x8packed);
 #endif
 
         for (size_t i = 0; i < sizeof(testcases) / sizeof(testcases[0]); i++) {
@@ -1383,7 +1368,7 @@ int main(int argc, char **argv) {
             if (!testname.empty() && testcases[i].name.compare(testname) != 0) {
                 continue;
             }
-            testFunctions.at(testcases[i].name)(testcases[i]);
+            testFunctions[i](testcases[i]);
         }
     }
 

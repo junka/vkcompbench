@@ -24,38 +24,80 @@ find_package(Vulkan REQUIRED)
 #     COMMENT "Compiling benchmark.wgsl to SPIR-V"
 # )
 
-set(SHADER_FILES
-    benchmark_int64.comp
-    benchmark_fp64.comp
-    benchmark_int32.comp
-    benchmark_fp32.comp
-    benchmark_int16.comp
-    benchmark_fp16.comp
-    benchmark_int8.comp
-    benchmark_int8dot.comp
-    benchmark_int8dotaccsat.comp
-    benchmark_int8dot4x8packed.comp
+set(COMMON_CASES
+    int64
+    fp64
+    int32
+    fp32
+    int16
+    fp16
+    int8
 )
 
-foreach(SHADER_FILE ${SHADER_FILES})
-    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
-    string(REGEX REPLACE "benchmark_" "" SHADER_SUFFIX ${SHADER_NAME})
+set(DOT8_CASES
+    int8dot
+    int8dotaccsat
+    int8dot4x8packed
+)
+
+function(add_shader SHADER_COMMON_FILE SHADER_NAME)
+    set(SHADER_VECTYPE_MAP
+        int64 u64vec4
+        int32 uvec4
+        fp64 f64vec4
+        fp32 vec4
+        int16 u16vec4
+        fp16 f16vec4
+        int8 u8vec4
+        int8dot u8vec4
+        int8dotaccsat u8vec4
+        int8dot4x8packed uint
+    )
+    set(SHADER_FMA_MAP
+        int64    "a*c+b"
+        int32    "a*c+b"
+        fp64     "a*c+b"
+        fp32     "a*c+b"
+        int16    "a*c+b"
+        fp16     "a*c+b"
+        int8     "a*c+b"
+        int8dot "dotEXT(a,b)+c"
+        int8dotaccsat "dotAccSatEXT(a,b,c)"
+        int8dot4x8packed "dotPacked4x8EXT(a,b)+c"
+    )
+    list(FIND SHADER_VECTYPE_MAP ${SHADER_NAME} SHADER_INDEX)
+    math(EXPR SHADER_INDEX "${SHADER_INDEX} + 1")
+    list(GET SHADER_VECTYPE_MAP ${SHADER_INDEX} SHADER_VECTYPE)
+    
+    list(FIND SHADER_FMA_MAP ${SHADER_NAME} SHADER_INDEX)
+    math(EXPR SHADER_INDEX "${SHADER_INDEX} + 1")
+    list(GET SHADER_FMA_MAP ${SHADER_INDEX} SHADER_FMA)
+
     add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv
-        COMMAND glslc ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE} -c -o ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_FILE}
-        COMMENT "Compiling ${SHADER_FILE} to SPIR-V"
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.spv
+        COMMAND glslc ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_COMMON_FILE} -c -DFMA="${SHADER_FMA}" -DVEC_TYPE="${SHADER_VECTYPE}" -o ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.spv
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER_COMMON_FILE}
+        COMMENT "Compiling ${SHADER_COMMON_FILE} to SPIR-V with VEC_TYPE=${SHADER_VECTYPE} and FMA=${SHADER_FMA}"
     )
     add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.h
-        COMMAND ${CMAKE_COMMAND} -D INPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv -D OUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.h -D ARRAY_NAME=shader${SHADER_SUFFIX} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_header.cmake
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv
-        COMMENT "Generating ${SHADER_NAME}.h from ${SHADER_NAME}.spv"
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.h
+        COMMAND ${CMAKE_COMMAND} -D INPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.spv -D OUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.h -D ARRAY_NAME=shader${SHADER_NAME} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_header.cmake
+        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.spv
+        COMMENT "Generating benchmark_${SHADER_NAME}.h from benchmark_${SHADER_NAME}.spv"
     )
     
-    list(APPEND SPIRV_FILES ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv)
-    list(APPEND HEADER_FILES ${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.h)
+    list(APPEND SPIRV_FILES ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.spv)
+    list(APPEND HEADER_FILES ${CMAKE_CURRENT_BINARY_DIR}/benchmark_${SHADER_NAME}.h)
+    set(SPIRV_FILES ${SPIRV_FILES} PARENT_SCOPE)
+    set(HEADER_FILES ${HEADER_FILES} PARENT_SCOPE)
+endfunction()
 
+foreach(SHADER_NAME ${COMMON_CASES})
+    add_shader(benchmark_common.comp ${SHADER_NAME})
+endforeach()
+
+foreach(SHADER_NAME ${DOT8_CASES})
+    add_shader(benchmark_int8dot_common.comp ${SHADER_NAME})
 endforeach()
 
 add_custom_target(compile_shaders DEPENDS ${SPIRV_FILES})
