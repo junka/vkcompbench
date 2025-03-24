@@ -1,11 +1,12 @@
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <type_traits>
+#include <tuple>
 #include <vector>
 #include <iomanip>
-#include <functional>
 
 #include <dlfcn.h>
 
@@ -100,7 +101,6 @@ public:
 
 VulkanLib vklib;
 #define OP(name) vklib.name
-
 
 class ComputeDevice {
 private:
@@ -302,13 +302,12 @@ private:
         deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
         deviceCreateInfo.pNext = pFirst;
 
-        VkResult error = OP(vkCreateDevice)(this->physicalDevice, &deviceCreateInfo, nullptr, &this->device);
-        return error;
+        return OP(vkCreateDevice)(this->physicalDevice, &deviceCreateInfo, nullptr, &this->device);
     }
 
     void getDeviceQueue(void)
     {
-        OP(vkGetDeviceQueue)(device, queueFamilyIndex, 0, &queue);
+        OP(vkGetDeviceQueue)(device, queueFamilyIndex, 0, &this->queue);
     }
 
 public:
@@ -344,7 +343,6 @@ public:
     VkPhysicalDevice physicalDevice;
     uint32_t queueFamilyIndex;
     VkQueue queue;
-
     float timestampPeriod;
 
     bool int64;
@@ -368,12 +366,9 @@ private:
             VkPhysicalDeviceMemoryProperties properties,
             VkMemoryPropertyFlags requiredProperties)
     {
-        if ((memoryTypeBits & (requiredProperties)) != requiredProperties) {
-            return -1;
-        }
-
         for (uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
-            if (((properties.memoryTypes[index].propertyFlags & requiredProperties) ==
+            if (((memoryTypeBits & (1 << index))) &&
+                ((properties.memoryTypes[index].propertyFlags & requiredProperties) ==
                 requiredProperties)) {
                 return (int32_t)index;
             }
@@ -706,6 +701,26 @@ private:
         OP(vkCreateQueryPool)(computedevice->device, &queryPoolCreateInfo, nullptr, &queryPool);
         this->queryPool = queryPool;
     }
+    std::vector<VkDescriptorSetLayoutBinding> OpDescriptorSetLayoutBinding(void)
+    {
+        std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
+
+        VkDescriptorSetLayoutBinding layoutBinding = {};
+        layoutBinding.binding = 0;
+        layoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        layoutBinding.descriptorCount = 1;
+        layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        layoutBindings.emplace_back(layoutBinding);
+
+        layoutBinding.binding = 1;
+        layoutBindings.emplace_back(layoutBinding);
+
+        layoutBinding.binding = 2;
+        layoutBindings.emplace_back(layoutBinding);
+
+        return layoutBindings;
+    }
+
 
 public:
     double OpGetTimestamp(void)
@@ -757,8 +772,9 @@ public:
         return VK_SUCCESS;
     }
 
-    explicit ComputeShader(std::shared_ptr<ComputeDevice> dev, std::vector<VkDescriptorSetLayoutBinding> layoutBindings,
-                  const int code_size, const unsigned char *code, int loop_count, int num_element): computedevice(dev) {
+    explicit ComputeShader(std::shared_ptr<ComputeDevice> dev, const int code_size, const unsigned char *code,
+                           int loop_count, int num_element): computedevice(dev) {
+        std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
         OpCreatePipeline(layoutBindings, loop_count, code_size, code);
         if (OpCreateBuffers(layoutBindings, num_element, sizeof(T))) {
             std::cout << "Failed to create buffers" << std::endl;
@@ -907,19 +923,15 @@ private:
 
         std::vector<VkLayerProperties> availableLayers(layerCount);
         OP(vkEnumerateInstanceLayerProperties)(&layerCount, availableLayers.data());
-        for (const auto& layerProperties : availableLayers) {
-            std::cout << "instance available layer: " << layerProperties.layerName << std::endl;
-        }
+
+        // first try VK_LAYER_KHRONOS_validation, it depreated VK_LAYER_LUNARG_standard_validation
         for (auto layer : availableLayers) {
-            // possible validation layers:
-            // first try VK_LAYER_KHRONOS_validation
-            // VK_LAYER_LUNARG_standard_validation
             if (std::string(layer.layerName).find("VK_LAYER_KHRONOS_validation") != std::string::npos) {
                 std::cout << "validation layer found " << layer.layerName << std::endl;
                 return std::string(layer.layerName);
             }
         }
-
+        // try VK_LAYER_LUNARG_standard_validation
         for (auto layer : availableLayers) {
             if (std::string(layer.layerName).find("VK_LAYER_LUNARG_standard_validation") != std::string::npos) {
                 std::cout << "validation layer found " << layer.layerName << std::endl;
@@ -992,6 +1004,50 @@ private:
         return instance;
     }
 
+    
+#if VK_EXT_debug_utils
+    static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+        VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+        const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        void* pUserData)
+    {
+        (void)messageTypes;
+        (void)pUserData;
+        if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            fprintf(stderr, "%s [%d]: %s\n", pCallbackData->pMessageIdName,
+                pCallbackData->messageIdNumber,
+                pCallbackData->pMessage);
+        } else {
+            fprintf(stdout, "%s [%d]: %s\n", pCallbackData->pMessageIdName,
+                pCallbackData->messageIdNumber,
+                pCallbackData->pMessage);
+        }
+        return VK_FALSE;
+    }
+#else
+    static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
+        VkDebugReportFlagsEXT flags,
+        VkDebugReportObjectTypeEXT objectType,
+        uint64_t object,
+        size_t location,
+        int32_t messageCode,
+        const char *pLayerPrefix,
+        const char *pMessage,
+        void *pUserData)
+    {
+        (void)flags;
+        (void)objectType;
+        (void)object;
+        (void)location;
+        (void)messageCode;
+        (void)pLayerPrefix;
+        (void)pUserData;
+        fprintf(stderr, "%s\n", pMessage);
+        return VK_FALSE;
+    }
+#endif
+
 #if VK_EXT_debug_utils
         VkDebugUtilsMessengerEXT callback;
 #else
@@ -1035,8 +1091,9 @@ public:
 
     
 #if VK_EXT_debug_utils
-    VkDebugUtilsMessengerEXT OpCreateDebugUtilsCallback(PFN_vkDebugUtilsMessengerCallbackEXT pfnCallback)
+    VkDebugUtilsMessengerEXT OpCreateDebugUtilsCallback()
     {
+        PFN_vkDebugUtilsMessengerCallbackEXT pfnCallback = &debugUtilsCallback;
         VkResult error;
 
         VkDebugUtilsMessengerCreateInfoEXT callbackCreateInfo;
@@ -1067,8 +1124,9 @@ public:
         return callback;
     }
 #else
-    VkDebugReportCallbackEXT OpCreateDebugReportCallback(PFN_vkDebugReportCallbackEXT pfnCallback)
+    VkDebugReportCallbackEXT OpCreateDebugReportCallback()
     {
+        PFN_vkDebugReportCallbackEXT pfnCallback = &debugReportCallback;
         VkResult error;
         VkDebugReportCallbackCreateInfoEXT callbackCreateInfo;
         callbackCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
@@ -1134,58 +1192,10 @@ public:
     }
 };
 
-std::vector<VkDescriptorSetLayoutBinding> OpDescriptorSetLayoutBinding(void)
-{
-    std::vector<VkDescriptorSetLayoutBinding> layoutBindings;
 
-    VkDescriptorSetLayoutBinding layoutBinding = {};
-    layoutBinding.binding = 0;
-    layoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    layoutBinding.descriptorCount = 1;
-    layoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    layoutBindings.emplace_back(layoutBinding);
-
-    layoutBinding.binding = 1;
-    layoutBindings.emplace_back(layoutBinding);
-
-    layoutBinding.binding = 2;
-    layoutBindings.emplace_back(layoutBinding);
-
-    return layoutBindings;
-}
-
-void OpBenchmarkResult(std::string name, double duration, uint64_t num_element, uint64_t loop_count, std::pair<float, float> result)
-{
-    std::cout << "Testcase: " << std::left << std::setw(20) << name << "\t";
-    std::cout << "Duration: " << duration << "s" << "\t";
-    const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
-    double ops = numOps / duration;
-    // std::cout << "NumOps: " << ops << "\t";
-    std::cout << "Throughput: ";
-    std::string deli = "";
-    if (name.find("fp")!= std::string::npos) {
-        deli = "FL";
-    }
-    if (ops > 1.0f * 1e12) {
-        std::cout << ops / 1e12 << " T";
-    } else if (ops > 1.0f * 1e9) {
-        std::cout << ops / 1e9 << " G";
-    } else if (ops > 1.0f * 1e6) {
-        std::cout << ops / 1e6 << " M";
-    } else if (ops > 1.0f * 1e3) {
-        std::cout << ops / 1e3 << " K";
-    } else {
-        std::cout << ops;
-    }
-    std::cout << deli << "OPS";
-    if (result.first != 0.0f) {
-        std::cout << "\tAccuracy: " << result.first << "(" << result.second <<"%)";
-    }
-    std::cout << std::endl;
-}
 
 enum testcase_type {
-    INT64,
+    INT64 = 0,
     FP64,
     INT32,
     FP32,
@@ -1197,93 +1207,89 @@ enum testcase_type {
     INT8DOT,
     INT8DOTACCSAT,
     INT8DOT4X8PACKED,
-};
-
-struct testcase {
-    std::string name;
-    const unsigned int code_size;
-    const unsigned char *code;
-    bool enable;
+    CASE_NUM
 };
 
 template<typename T>
-void OpRunShader(std::shared_ptr<ComputeDevice> dev,
-                 std::vector<VkDescriptorSetLayoutBinding> &layoutBindings, struct testcase &t)
-{
-    const int num_element = 1024 * 1024;
-    const uint32_t loop_count = 10000;
-    ComputeShader<T> shader(dev, layoutBindings, t.code_size, t.code, loop_count, num_element);
+class optestcase {
+    std::string name;
+    const unsigned int code_size;
+    const unsigned char *code;
 
-    // OP_GET_FUNC(vkResetCommandBuffer);
-    double duration = MAXFLOAT;
-    for (int sloop = 0; sloop < 8; sloop++) {
-        shader.OpDispatchCommand(num_element);
-        shader.OpSubmitWork(num_element);
-        duration = std::fmin(shader.OpGetTimestamp(), duration);
-        // vkResetCommandBuffer(shader.commandBuffer, 0);
+    void OpBenchmarkResult(double duration, uint64_t num_element, uint64_t loop_count, std::pair<float, float> result)
+    {
+        std::cout << "Testcase: " << std::left << std::setw(20) << name << "\t";
+        std::cout << "Duration: " << duration << "s" << "\t";
+        const double numOps = 2.f * 8.0f * double(num_element) * double(loop_count);
+        double ops = numOps / duration;
+        std::cout << "Throughput: ";
+        std::string deli = "";
+        if (name.find("fp")!= std::string::npos) {
+            deli = "FL";
+        }
+        const constexpr std::array<std::pair<double, const char*>, 4> units = {{
+            {1e12, " T"}, {1e9, " G"}, {1e6, " M"}, {1e3, " K"}
+        }};
+        for (const auto& [threshold, suffix] : units) {
+            if (ops > threshold) {
+                std::cout << ops / threshold << suffix;
+                break;
+            }
+        }
+        std::cout << deli << "OPS";
+        if (result.first != 0.0f) {
+            std::cout << "\tAccuracy: " << result.first << "(" << result.second <<"%)";
+        }
+        std::cout << std::endl;
     }
-    auto r = shader.OpVerifyWork(num_element, loop_count);
-    OpBenchmarkResult(t.name, duration, num_element, loop_count, r);
-}
+public:
+    void OpRunShader(std::shared_ptr<ComputeDevice> dev)
+    {
+        const constexpr int num_element = 1024 * 1024;
+        const constexpr uint32_t loop_count = 10000;
+        ComputeShader<T> shader(dev, code_size, code, loop_count, num_element);
 
-#if VK_EXT_debug_utils
-VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-    VkDebugUtilsMessageTypeFlagsEXT messageTypes,
-    const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-    void* pUserData)
-{
-    (void)messageTypes;
-    (void)pUserData;
-    if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        fprintf(stderr, "%s [%d]: %s\n", pCallbackData->pMessageIdName,
-            pCallbackData->messageIdNumber,
-            pCallbackData->pMessage);
-    } else {
-        fprintf(stdout, "%s [%d]: %s\n", pCallbackData->pMessageIdName,
-            pCallbackData->messageIdNumber,
-            pCallbackData->pMessage);
+        double duration = MAXFLOAT;
+        for (int sloop = 0; sloop < 8; sloop++) {
+            shader.OpDispatchCommand(num_element);
+            shader.OpSubmitWork(num_element);
+            duration = std::fmin(shader.OpGetTimestamp(), duration);
+        }
+        auto r = shader.OpVerifyWork(num_element, loop_count);
+        OpBenchmarkResult(duration, num_element, loop_count, r);
     }
-    return VK_FALSE;
-}
-#else
-VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
-    VkDebugReportFlagsEXT flags,
-    VkDebugReportObjectTypeEXT objectType,
-    uint64_t object,
-    size_t location,
-    int32_t messageCode,
-    const char *pLayerPrefix,
-    const char *pMessage,
-    void *pUserData)
-{
-    (void)flags;
-    (void)objectType;
-    (void)object;
-    (void)location;
-    (void)messageCode;
-    (void)pLayerPrefix;
-    (void)pUserData;
-    fprintf(stderr, "%s\n", pMessage);
-    return VK_FALSE;
-}
-#endif
+
+    optestcase(std::string name, const unsigned int code_size, const unsigned char *code, bool enable):
+               name(name), code_size(code_size), code(code), enable(enable) {}
+    ~optestcase() {}
+    std::string getName() { return name; }
+    bool enable;
+};
 
 int main(int argc, char **argv) {
-    struct testcase testcases[] = {
-        [INT64] = {"int64", shaderint64_size, shaderint64_code, false},
-        [FP64] = {"fp64", shaderfp64_size, shaderfp64_code, false},
-        [INT32] = {"int32", shaderint32_size, shaderint32_code, true},
-        [FP32] = {"fp32", shaderfp32_size, shaderfp32_code, true},
-        [INT16] = {"int16", shaderint16_size, shaderint16_code, false},
+    std::tuple<optestcase<int64_t>, optestcase<_Float64>, optestcase<int32_t>,
+        optestcase<float>, optestcase<int16_t>,
 #ifdef HAVE_FLOAT16
-        [FP16] = {"fp16", shaderfp16_size, shaderfp16_code, false},
+        optestcase<_Float16>,
 #endif
-        [INT8] = {"int8", shaderint8_size, shaderint8_code, false},
+        optestcase<uint8_t>
 #ifdef VK_KHR_shader_integer_dot_product
-        [INT8DOT] = {"int8dot", shaderint8dot_size, shaderint8dot_code, false},
-        [INT8DOTACCSAT] = {"int8dotaccsat", shaderint8dotaccsat_size, shaderint8dotaccsat_code, false},
-        [INT8DOT4X8PACKED] = {"int8dot4x8packed", shaderint8dot4x8packed_size, shaderint8dot4x8packed_code, false},
+        , optestcase<uint8_t>, optestcase<uint8_t>, optestcase<uint8_t>
+#endif
+        > testcases = {
+            optestcase<int64_t>("int64", shaderint64_size, shaderint64_code, false),
+            optestcase<_Float64>("fp64", shaderfp64_size, shaderfp64_code, false),
+            optestcase<int32_t>("int32", shaderint32_size, shaderint32_code, true),
+            optestcase<float>("fp32", shaderfp32_size, shaderfp32_code, true),
+            optestcase<int16_t>("int16", shaderint16_size, shaderint16_code, false),
+#ifdef HAVE_FLOAT16
+            optestcase<_Float16>("fp16", shaderfp16_size, shaderfp16_code, false),
+#endif
+            optestcase<uint8_t>("int8", shaderint8_size, shaderint8_code, false),
+#ifdef VK_KHR_shader_integer_dot_product
+            optestcase<uint8_t>("int8dot", shaderint8dot_size, shaderint8dot_code, false),
+            optestcase<uint8_t>("int8dotaccsat", shaderint8dotaccsat_size, shaderint8dotaccsat_code, false),
+            optestcase<uint8_t>("int8dot4x8packed", shaderint8dot4x8packed_size, shaderint8dot4x8packed_code, false),
 #endif
     };
 
@@ -1296,20 +1302,17 @@ int main(int argc, char **argv) {
                 return 0;
             } else if (std::string(argv[i]).compare("--list") == 0) {
                 std::cout << "Available tests:" << std::endl;
-                for (size_t j = 0; j < sizeof(testcases) / sizeof(testcases[0]); j++) {
-                    std::cout << testcases[j].name << std::endl;
-                }
+                std::apply([](auto&&... test) {((std::cout << test.getName() << '\n'), ...);}, testcases);
                 return 0;
             } else if (std::string(argv[i]).compare("--test") == 0) {
                 testname = std::string(argv[i+1]);
                 i++;
-                size_t j = 0;
-                for (; j < sizeof(testcases) / sizeof(testcases[0]); j++) {
-                    if (testcases[j].name.compare(testname) == 0) {
-                        break;
-                    }
-                }
-                if (j == sizeof(testcases) / sizeof(testcases[0])) {
+                bool found = false;
+                std::apply([&](auto&&... test) {
+                    ((((test.getName().compare(testname) == 0) ? (found = true, 0) : 0)), ...);
+                }, testcases);
+
+                if (found == false) {
                     std::cout << "invalid testname \"" << testname << "\"" << std::endl;
                     return -1;
                 }
@@ -1322,54 +1325,30 @@ int main(int argc, char **argv) {
 
     VulkanInstance vulkanInstance;
 #if VK_EXT_debug_utils
-    vulkanInstance.OpCreateDebugUtilsCallback(&debugUtilsCallback);
+    vulkanInstance.OpCreateDebugUtilsCallback();
 #else
-    vulkanInstance.OpCreateDebugReportCallback(&debugReportCallback);
+    vulkanInstance.OpCreateDebugReportCallback();
 #endif
-    std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
 
     {
         auto r = vulkanInstance.getDeviceAndQeueue();
         auto dev = std::make_shared<ComputeDevice>(r.first, r.second);
-        std::function<void(struct testcase &)> testFunctions[] = {
-            [INT64] = [&](struct testcase &t) { OpRunShader<int64_t>(dev, layoutBindings, t); },
-            [FP64] = [&](struct testcase &t) { OpRunShader<_Float64>(dev, layoutBindings, t); },
-            [INT32] = [&](struct testcase &t) { OpRunShader<int>(dev, layoutBindings, t); },
-            [FP32] = [&](struct testcase &t) { OpRunShader<float>(dev, layoutBindings, t); },
-            [INT16] = [&](struct testcase &t) { OpRunShader<uint16_t>(dev, layoutBindings, t); },
+    
+        std::get<INT64>(testcases).enable = dev->int64;
+        std::get<FP64>(testcases).enable = dev->fp64;
+        std::get<INT16>(testcases).enable = dev->int16;
 #ifdef HAVE_FLOAT16
-            [FP16] = [&](struct testcase &t) { OpRunShader<_Float16>(dev, layoutBindings, t); },
+        std::get<FP16>(testcases).enable = dev->fp16;
 #endif
-            [INT8] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
+        std::get<INT8>(testcases).enable = dev->int8;
 #ifdef VK_KHR_shader_integer_dot_product
-            [INT8DOT] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
-            [INT8DOTACCSAT] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
-            [INT8DOT4X8PACKED] = [&](struct testcase &t) { OpRunShader<uint8_t>(dev, layoutBindings, t); },
+        std::get<INT8DOT>(testcases).enable = (dev->int8 && dev->dot && dev->int8dot);
+        std::get<INT8DOTACCSAT>(testcases).enable = (dev->int8 && dev->dot && dev->int8dotaccsat);
+        std::get<INT8DOT4X8PACKED>(testcases).enable = (dev->int8 && dev->dot && dev->int8dot4x8packed);
 #endif
-        };
-        testcases[INT64].enable = dev->int64;
-        testcases[FP64].enable = dev->fp64;
-        testcases[INT16].enable = dev->int16;
-#ifdef HAVE_FLOAT16
-        testcases[FP16].enable = dev->fp16;
-#endif
-        testcases[INT8].enable = dev->int8;
-#ifdef VK_KHR_shader_integer_dot_product
-        testcases[INT8DOT].enable = (dev->int8 && dev->dot && dev->int8dot);
-        testcases[INT8DOTACCSAT].enable = (dev->int8 && dev->dot && dev->int8dotaccsat);
-        testcases[INT8DOT4X8PACKED].enable = (dev->int8 && dev->dot && dev->int8dot4x8packed);
-#endif
-
-        for (size_t i = 0; i < sizeof(testcases) / sizeof(testcases[0]); i++) {
-            if (!testcases[i].enable) {
-                std::cout << "Testcase: " << testcases[i].name << "\tNot Supported" << std::endl;
-                continue;
-            }
-            if (!testname.empty() && testcases[i].name.compare(testname) != 0) {
-                continue;
-            }
-            testFunctions[i](testcases[i]);
-        }
+        std::apply([&](auto&&... test) {
+            (( (!test.enable || (!testname.empty() && test.getName().compare(testname) != 0)) ? 0 : (test.OpRunShader(dev), 0)), ...);
+        }, testcases);        
     }
 
     return 0;
