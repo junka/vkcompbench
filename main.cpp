@@ -102,6 +102,20 @@ public:
 VulkanLib vklib;
 #define OP(name) vklib.name
 
+enum shader_feature {
+    FEATURE_INT64 = 1 << 0,
+    FEATURE_FP64 = 1 << 1,
+    FEATURE_INT32 = 1 << 2,
+    FEATURE_FP32 = 1 << 3,
+    FEATURE_INT16 = 1 << 4,
+    FEATURE_FP16 = 1 << 5,
+    FEATURE_INT8 = 1 << 6,
+    FEATURE_DOT = 1 << 7,
+    FEATURE_INT8DOT = 1 << 8,
+    FEATURE_INT8DOTACCSAT = 1 << 9,
+    FEATURE_INT8DOT4x8PACKED = 1 << 10,
+};
+
 class ComputeDevice {
 private:
     std::vector<VkExtensionProperties> ext_properties;
@@ -110,10 +124,10 @@ private:
     {
         VkPhysicalDeviceFeatures deviceFeatures = {};
         OP(vkGetPhysicalDeviceFeatures)(physicalDevice, &deviceFeatures);
-        this->int64 = deviceFeatures.shaderInt64;
-        this->fp64 = deviceFeatures.shaderFloat64;
-        //fp32, int32 shuold be supported by default
-        this->int16 = deviceFeatures.shaderInt16;
+        this->features |= (deviceFeatures.shaderInt64 ? FEATURE_INT64 : 0);
+        this->features |= (deviceFeatures.shaderFloat64 ? FEATURE_FP64 : 0);
+        this->features |= FEATURE_FP32 | FEATURE_INT32;
+        this->features |= (deviceFeatures.shaderInt16 ? FEATURE_INT16 : 0);
 
         VkPhysicalDeviceShaderFloat16Int8Features float16Int8Features = {};
         float16Int8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
@@ -128,12 +142,10 @@ private:
         features2.pNext = &float16Int8Features;
 
         OP(vkGetPhysicalDeviceFeatures2)(physicalDevice, &features2);
-        this->fp16 = float16Int8Features.shaderFloat16;
-        this->int8 = float16Int8Features.shaderInt8;
+        this->features |= (float16Int8Features.shaderFloat16 ? FEATURE_FP16 : 0);
+        this->features |= (float16Int8Features.shaderInt8 ? FEATURE_INT8 : 0);
 #if VK_KHR_shader_integer_dot_product
-        this->dot = integerDotProductFeatures.shaderIntegerDotProduct;
-#else
-        this->dot = false;
+        this->features |= (integerDotProductFeatures.shaderIntegerDotProduct ? FEATURE_DOT : 0);
 #endif
     }
 
@@ -159,7 +171,6 @@ private:
     }
 #if VK_KHR_shader_integer_dot_product
     void check_shader_integer_dot_product_support() {
-
         VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR integerDotProductProperties = {};
         integerDotProductProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES_KHR;
 
@@ -168,11 +179,9 @@ private:
         properties2.pNext = &integerDotProductProperties;
 
         OP(vkGetPhysicalDeviceProperties2)(physicalDevice, &properties2);
-
-        // Check for supported integer dot product features
-        this->int8dot = integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated;
-        this->int8dot4x8packed = integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated;
-        this->int8dotaccsat = integerDotProductProperties.integerDotProductAccumulatingSaturating8BitUnsignedAccelerated;
+        this->features |= (integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated ? FEATURE_INT8DOT : 0);
+        this->features |= (integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated ? FEATURE_INT8DOT4x8PACKED : 0);
+        this->features |= (integerDotProductProperties.integerDotProductAccumulatingSaturating8BitUnsignedAccelerated ? FEATURE_INT8DOTACCSAT : 0);
     }
 #endif
     void getDeviceTimeLimits(void)
@@ -196,11 +205,11 @@ private:
         std::vector<const char *> enabledExtensions;
         VkPhysicalDeviceFeatures features = {};
         features.robustBufferAccess = VK_TRUE;
-        if (this->int64)
+        if (this->features & FEATURE_INT64)
             features.shaderInt64 = VK_TRUE;
-        if (this->fp64)
+        if (this->features & FEATURE_FP64)
             features.shaderFloat64 = VK_TRUE;
-        if (this->int16)
+        if (this->features & FEATURE_INT16)
             features.shaderInt16 = VK_TRUE;
 
         VkPhysicalDeviceFloat16Int8FeaturesKHR float16Int8Features = {};
@@ -234,14 +243,14 @@ private:
         features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         features13.shaderIntegerDotProduct = VK_TRUE;
 #endif
-        if (this->int8) {
+        if (this->features & FEATURE_INT8) {
             float16Int8Features.shaderInt8 = VK_TRUE;
             if (checkDeviceExtensionFeature(VK_KHR_8BIT_STORAGE_EXTENSION_NAME)) {
                 enabledExtensions.push_back(VK_KHR_8BIT_STORAGE_EXTENSION_NAME);
                 enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&storage8bitFeatures));
             }
         }
-        if (this->fp16) {
+        if (this->features & FEATURE_FP16) {
             float16Int8Features.shaderFloat16 = VK_TRUE;
             if (checkDeviceExtensionFeature(VK_KHR_16BIT_STORAGE_EXTENSION_NAME)) {
                 enabledExtensions.push_back(VK_KHR_16BIT_STORAGE_EXTENSION_NAME);
@@ -252,13 +261,13 @@ private:
                 }
             }
         }
-        if (this->int8 || this->fp16) {
+        if (this->features & (FEATURE_INT8 |FEATURE_FP16)) {
             if (checkDeviceExtensionFeature(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
                 enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&float16Int8Features));
                 enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
             }
         }
-        if (this->dot) {
+        if (this->features & FEATURE_DOT) {
 #ifdef VK_KHR_shader_integer_dot_product
             if (checkDeviceExtensionFeature(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME)) {
                 enabledExtensions.push_back(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME);
@@ -331,7 +340,7 @@ public:
         }
         getDeviceQueue();
 #if VK_KHR_shader_integer_dot_product
-        if (dot)
+        if (this->features & FEATURE_DOT)
             check_shader_integer_dot_product_support();
 #endif
     };
@@ -345,19 +354,7 @@ public:
     VkQueue queue;
     float timestampPeriod;
 
-    bool int64;
-    bool fp64;
-    // int32 and fp32 should be supported by default
-    bool int16;
-    bool fp16;
-    bool int8;
-    bool dot;
-#ifdef VK_KHR_shader_integer_dot_product
-    bool int8dot;
-    bool int8dot4x8packed;
-    bool int8dotaccsat;
-#endif
-
+    uint32_t features;
 };
 
 class ComputeBuffer {
@@ -931,7 +928,6 @@ private:
                 return std::string(layer.layerName);
             }
         }
-        // try VK_LAYER_LUNARG_standard_validation
         for (auto layer : availableLayers) {
             if (std::string(layer.layerName).find("VK_LAYER_LUNARG_standard_validation") != std::string::npos) {
                 std::cout << "validation layer found " << layer.layerName << std::endl;
@@ -945,20 +941,24 @@ private:
     {
         uint32_t version;
         OP(vkEnumerateInstanceVersion)(&version);
-        // std::cout << "version " << VK_VERSION_MAJOR(version) << "." << VK_VERSION_MINOR(version) << "." << VK_VERSION_PATCH(version) << std::endl;
+        std::cout << "vulkan version " << VK_VERSION_MAJOR(version) << "." << VK_VERSION_MINOR(version) << "." << VK_VERSION_PATCH(version) << std::endl;
     }
-        
+
     void checkInstanceExtension()
     {
         uint32_t pPropertyCount;
         OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, nullptr);
-        std::cout << "instance extension count: " << pPropertyCount << std::endl;
-        std::vector<VkExtensionProperties> pProperties(pPropertyCount);
-        OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, pProperties.data());
-        for (uint32_t i = 0; i < pPropertyCount; i++) {
-            std::cout << "instance " << pProperties[i].extensionName << std::endl;
+        ext_properties.resize(pPropertyCount);
+        OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, ext_properties.data());
+    }
+    bool checkInstanceExtensionFeature(const char *name)
+    {
+        for (auto ext : this->ext_properties) {
+            if (std::string(ext.extensionName).compare(name) == 0) {
+                return true;
+            }
         }
-
+        return false;
     }
 
     VkInstance OpCreateInstance(std::vector<const char *> &enabledLayerNames) {
@@ -979,14 +979,17 @@ private:
         // enable debug and validation layers
         instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
         instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
-        
-        std::vector<const char *> enabledExtensionNames = {
+
 #if VK_EXT_debug_utils
-            VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-#else
-            VK_EXT_DEBUG_REPORT_EXTENSION_NAME
+        if (checkInstanceExtensionFeature(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+            enabledExtensionNames.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
 #endif
-        };
+#if VK_EXT_debug_report
+        if (enabledExtensionNames.empty() && checkInstanceExtensionFeature(VK_EXT_DEBUG_REPORT_EXTENSION_NAME)) {
+            enabledExtensionNames.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+        }
+#endif
         if (enabledLayerNames.size() > 0) {
             instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
             instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
@@ -995,7 +998,7 @@ private:
         VkResult error = OP(vkCreateInstance)(&instanceCreateInfo, nullptr, &instance);
         if (error != VK_SUCCESS) {
             std::cout << "fail to create instance " << error << std::endl;
-            if (error == -6) {
+            if (error == VK_ERROR_LAYER_NOT_PRESENT) {
                 std::cout << "VK_ERROR_LAYER_NOT_PRESENT" << std::endl;
             }
             return nullptr;
@@ -1025,7 +1028,8 @@ private:
         }
         return VK_FALSE;
     }
-#else
+#endif
+#if VK_EXT_debug_report
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(
         VkDebugReportFlagsEXT flags,
         VkDebugReportObjectTypeEXT objectType,
@@ -1048,48 +1052,6 @@ private:
     }
 #endif
 
-#if VK_EXT_debug_utils
-        VkDebugUtilsMessengerEXT callback;
-#else
-        VkDebugReportCallbackEXT callback;
-#endif
-public:
-    VulkanInstance() {
-        checkVulkanVersion();
-        std::string str = findValidationLayerSupport();
-        std::vector<const char *> enabledLayerNames;
-        if (!str.empty()) {
-            enabledLayerNames.push_back(str.c_str());
-        }
-        // checkInstanceExtension();
-        instance = OpCreateInstance(enabledLayerNames);
-        if (!instance) {
-            throw -1;
-        }
-    }
-
-    ~VulkanInstance() {
-        if (callback) {
-    #if VK_EXT_debug_utils
-            auto vkDestroyDebugUtilsMessengerEXT =
-                reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-                    OP(vkGetInstanceProcAddr)(instance, "vkDestroyDebugUtilsMessengerEXT"));
-
-            if (vkDestroyDebugUtilsMessengerEXT)
-                vkDestroyDebugUtilsMessengerEXT(instance, callback, nullptr);
-    #else
-            auto vkDestroyDebugReportCallbackEXT =
-                reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(
-                    OP(vkGetInstanceProcAddr)(instance, "vkDestroyDebugReportCallbackEXT"));
-            if (vkDestroyDebugReportCallbackEXT)
-                vkDestroyDebugReportCallbackEXT(instance, callback, nullptr);
-    #endif
-        }
-        OP(vkDestroyInstance)(instance, nullptr);
-
-    }
-
-    
 #if VK_EXT_debug_utils
     VkDebugUtilsMessengerEXT OpCreateDebugUtilsCallback()
     {
@@ -1120,10 +1082,11 @@ public:
                 return nullptr;
             }
         }
-        this->callback = callback;
+        this->callback.utils = callback;
         return callback;
     }
-#else
+#endif
+#if VK_EXT_debug_report
     VkDebugReportCallbackEXT OpCreateDebugReportCallback()
     {
         PFN_vkDebugReportCallbackEXT pfnCallback = &debugReportCallback;
@@ -1148,17 +1111,72 @@ public:
                 return nullptr;
             }
         }
-        this->callback = callback;
+        this->callback.report = callback;
 
         return callback;
     }
 #endif
-    
+
+    std::vector<const char *> enabledExtensionNames;
+    std::vector<VkExtensionProperties> ext_properties;
+    union {
+#if VK_EXT_debug_utils
+        VkDebugUtilsMessengerEXT utils;
+#endif
+#if VK_EXT_debug_report
+        VkDebugReportCallbackEXT report;
+#endif
+    } callback;
+public:
+    VulkanInstance() {
+        checkVulkanVersion();
+        std::string str = findValidationLayerSupport();
+        std::vector<const char *> enabledLayerNames;
+        if (!str.empty()) {
+            enabledLayerNames.push_back(str.c_str());
+        }
+        checkInstanceExtension();
+        instance = OpCreateInstance(enabledLayerNames);
+        if (!instance) {
+            throw -1;
+        }
+#if VK_EXT_debug_utils
+        OpCreateDebugUtilsCallback();
+#endif
+#if VK_EXT_debug_report
+        if (callback.utils == nullptr) {
+            OpCreateDebugReportCallback();
+        }
+#endif
+    }
+
+    ~VulkanInstance() {
+#if VK_EXT_debug_utils
+        if (callback.utils && !enabledExtensionNames.empty() && 
+            std::string(enabledExtensionNames[0]).compare(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
+            auto vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                    OP(vkGetInstanceProcAddr)(instance, "vkDestroyDebugUtilsMessengerEXT"));
+            if (vkDestroyDebugUtilsMessengerEXT)
+                vkDestroyDebugUtilsMessengerEXT(instance, callback.utils, nullptr);
+        }
+#endif
+#if VK_EXT_debug_report
+        if (callback.report && !enabledExtensionNames.empty() &&
+            std::string(enabledExtensionNames[0]).compare(VK_EXT_DEBUG_REPORT_EXTENSION_NAME) == 0) {
+            auto vkDestroyDebugReportCallbackEXT = reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(
+                    OP(vkGetInstanceProcAddr)(instance, "vkDestroyDebugReportCallbackEXT"));
+            if (vkDestroyDebugReportCallbackEXT)
+                vkDestroyDebugReportCallbackEXT(instance, callback.report, nullptr);
+        }
+#endif
+        OP(vkDestroyInstance)(instance, nullptr);
+
+    }
+
     std::pair<VkPhysicalDevice, uint32_t> getDeviceAndQeueue(void) {
-        VkResult error;
         uint32_t count;
 
-        error = OP(vkEnumeratePhysicalDevices)(instance, &count, nullptr);
+        VkResult error = OP(vkEnumeratePhysicalDevices)(instance, &count, nullptr);
         if (error != VK_SUCCESS) {
             return { nullptr, 0};
         }
@@ -1192,23 +1210,29 @@ public:
     }
 };
 
-
-
-enum testcase_type {
-    INT64 = 0,
-    FP64,
-    INT32,
-    FP32,
-    INT16,
 #ifdef HAVE_FLOAT16
-    FP16,
+#define TESTCASE_FP16 _(FP16)
+#else
+#define TESTCASE_FP16
 #endif
-    INT8,
-    INT8DOT,
-    INT8DOTACCSAT,
-    INT8DOT4X8PACKED,
-    CASE_NUM
-};
+#if VK_KHR_shader_integer_dot_product
+#define TESTCASE_DOT \
+    _(INT8DOT) \
+    _(INT8DOTACCSAT) \
+    _(INT8DOT4X8PACKED)
+#else
+    #define TESTCASE_DOT
+#endif
+
+#define TESTCASES \
+    _(INT64) \
+    _(FP64) \
+    _(INT32) \
+    _(FP32) \
+    _(INT16) \
+    TESTCASE_FP16 \
+    _(INT8) \
+    TESTCASE_DOT
 
 template<typename T>
 class optestcase {
@@ -1266,6 +1290,11 @@ public:
     bool enable;
 };
 
+enum testcase_type {
+#define _(x) x,
+    TESTCASES
+#undef _
+};
 int main(int argc, char **argv) {
     std::tuple<optestcase<int64_t>, optestcase<_Float64>, optestcase<int32_t>,
         optestcase<float>, optestcase<int16_t>,
@@ -1293,7 +1322,6 @@ int main(int argc, char **argv) {
 #endif
     };
 
-    // parse input arguments, accept --help, --list, --test <testname>
     std::string testname;
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
@@ -1324,28 +1352,12 @@ int main(int argc, char **argv) {
     }
 
     VulkanInstance vulkanInstance;
-#if VK_EXT_debug_utils
-    vulkanInstance.OpCreateDebugUtilsCallback();
-#else
-    vulkanInstance.OpCreateDebugReportCallback();
-#endif
-
     {
         auto r = vulkanInstance.getDeviceAndQeueue();
         auto dev = std::make_shared<ComputeDevice>(r.first, r.second);
-    
-        std::get<INT64>(testcases).enable = dev->int64;
-        std::get<FP64>(testcases).enable = dev->fp64;
-        std::get<INT16>(testcases).enable = dev->int16;
-#ifdef HAVE_FLOAT16
-        std::get<FP16>(testcases).enable = dev->fp16;
-#endif
-        std::get<INT8>(testcases).enable = dev->int8;
-#ifdef VK_KHR_shader_integer_dot_product
-        std::get<INT8DOT>(testcases).enable = (dev->int8 && dev->dot && dev->int8dot);
-        std::get<INT8DOTACCSAT>(testcases).enable = (dev->int8 && dev->dot && dev->int8dotaccsat);
-        std::get<INT8DOT4X8PACKED>(testcases).enable = (dev->int8 && dev->dot && dev->int8dot4x8packed);
-#endif
+#define _(x) std::get<x>(testcases).enable = dev->features & FEATURE_##x;
+        TESTCASES
+#undef _
         std::apply([&](auto&&... test) {
             (( (!test.enable || (!testname.empty() && test.getName().compare(testname) != 0)) ? 0 : (test.OpRunShader(dev), 0)), ...);
         }, testcases);        
