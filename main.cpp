@@ -1,8 +1,10 @@
+#include <__config>
 #include <array>
 #include <cmath>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <tuple>
 #include <vector>
@@ -73,15 +75,26 @@
 class VulkanLib {
 private:
     void *lib;
-    std::unique_ptr<std::map<std::string, void *>> symbols;
+    std::unique_ptr<std::map<std::string, void *> > symbols;
 public:
     VulkanLib() {
-        symbols = std::make_unique<std::map<std::string, void *>>();
-        const char *const name = "libvulkan.so.1";
-
-        lib = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
+        symbols = std::make_unique<std::map<std::string, void *> >();
+#ifdef __APPLE__
+        // const char *const name = "libMoltenVK.dylib";
+        lib = dlopen("libvulkan.dylib", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib)
+            lib = dlopen("libvulkan.1.dylib", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib)
+		    lib = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL);
+        if (!lib && getenv("DYLD_FALLBACK_LIBRARY_PATH") == nullptr)
+            lib = dlopen("/usr/local/lib/libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+#elif defined __linux__
+        lib = dlopen("libvulkan.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if (!lib)
+            lib = dlopen("libvulkan.so", RTLD_LAZY | RTLD_LOCAL);
+#endif
         if (!lib) {
-            std::cerr << "Failed to load library " << name << "," << dlerror() << std::endl;
+            std::cerr << "Failed to load vulkan library ," << dlerror() << std::endl;
             return ;
         }
 #define PFN(name) name = reinterpret_cast<PFN_##name>(dlsym(lib, #name));
@@ -113,7 +126,7 @@ enum shader_feature {
     FEATURE_DOT = 1 << 7,
     FEATURE_INT8DOT = 1 << 8,
     FEATURE_INT8DOTACCSAT = 1 << 9,
-    FEATURE_INT8DOT4x8PACKED = 1 << 10,
+    FEATURE_INT8DOT4X8PACKED = 1 << 10,
 };
 
 class ComputeDevice {
@@ -155,10 +168,10 @@ private:
         OP(vkEnumerateDeviceExtensionProperties)(physicalDevice, NULL, &extensionCount, NULL);
         this->ext_properties.resize(extensionCount);
         OP(vkEnumerateDeviceExtensionProperties)(physicalDevice, NULL, &extensionCount, this->ext_properties.data());
-        // std::cout << "Device Extensions:" << std::endl;
-        // for (uint32_t i = 0; i < extensionCount; i++) {
-        //     std::cout << ext_properties[i].extensionName << ":" << ext_properties[i].specVersion << std::endl;
-        // }
+        std::cout << "Device Extensions:" << std::endl;
+        for (uint32_t i = 0; i < extensionCount; i++) {
+            std::cout << ext_properties[i].extensionName << ":" << ext_properties[i].specVersion << std::endl;
+        }
     }
     bool checkDeviceExtensionFeature(const char *name)
     {
@@ -180,7 +193,7 @@ private:
 
         OP(vkGetPhysicalDeviceProperties2)(physicalDevice, &properties2);
         this->features |= (integerDotProductProperties.integerDotProduct8BitUnsignedAccelerated ? FEATURE_INT8DOT : 0);
-        this->features |= (integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated ? FEATURE_INT8DOT4x8PACKED : 0);
+        this->features |= (integerDotProductProperties.integerDotProduct4x8BitPackedUnsignedAccelerated ? FEATURE_INT8DOT4X8PACKED : 0);
         this->features |= (integerDotProductProperties.integerDotProductAccumulatingSaturating8BitUnsignedAccelerated ? FEATURE_INT8DOTACCSAT : 0);
     }
 #endif
@@ -260,6 +273,14 @@ private:
                     enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&storage16bitFeatures));
                 }
             }
+#if VK_AMD_gpu_shader_half_float
+            if (deviceProperties.vendorID == 4098) {
+                // for AMD card, do we really need this ? over VK_KHR_shader_float16_int8
+                if (checkDeviceExtensionFeature(VK_AMD_GPU_SHADER_HALF_FLOAT_EXTENSION_NAME)) {
+                    enabledExtensions.push_back(VK_AMD_GPU_SHADER_HALF_FLOAT_EXTENSION_NAME);
+                }
+            }
+#endif
         }
         if (this->features & (FEATURE_INT8 |FEATURE_FP16)) {
             if (checkDeviceExtensionFeature(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
@@ -307,7 +328,7 @@ private:
         deviceCreateInfo.enabledLayerCount = 0;
         deviceCreateInfo.ppEnabledLayerNames = nullptr;
         deviceCreateInfo.pEnabledFeatures = &features;
-        deviceCreateInfo.enabledExtensionCount = enabledExtensions.size();
+        deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
         deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
         deviceCreateInfo.pNext = pFirst;
 
@@ -335,8 +356,7 @@ public:
             errstrings[VK_ERROR_EXTENSION_NOT_PRESENT] = "VK_ERROR_EXTENSION_NOT_PRESENT";
             errstrings[VK_ERROR_FEATURE_NOT_PRESENT] = "VK_ERROR_FEATURE_NOT_PRESENT";
             errstrings[VK_ERROR_TOO_MANY_OBJECTS] = "VK_ERROR_TOO_MANY_OBJECTS";
-            std::cout << "Failed to create device " << errstrings[err] << std::endl;
-            throw 1;
+            throw std::runtime_error("Failed to create device " + errstrings[err]);
         }
         getDeviceQueue();
 #if VK_KHR_shader_integer_dot_product
@@ -438,8 +458,7 @@ public:
         computedevice(computedevice) {
         VkResult error = __OpCreateBuffer(bufferflags, memoryflags, num_element, element_size);
         if (error) {
-            std::cout << "failed to create buffer1 !" << std::endl;
-            throw error;
+            throw std::runtime_error("failed to create buffer1");
         }
     };
     ~ComputeBuffer() {
@@ -476,7 +495,7 @@ private:
 
         VkDescriptorSetLayoutCreateInfo setLayoutCreateInfo = {};
         setLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        setLayoutCreateInfo.bindingCount = layoutBindings.size();
+        setLayoutCreateInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
         setLayoutCreateInfo.pBindings = layoutBindings.data();
 
         error = OP(vkCreateDescriptorSetLayout)(device, &setLayoutCreateInfo, nullptr,
@@ -573,7 +592,7 @@ private:
         descriptorPoolCreateInfo.poolSizeCount = 1;
         VkDescriptorPoolSize poolSize = {};
         poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = layoutBindings.size();
+        poolSize.descriptorCount = static_cast<uint32_t>(layoutBindings.size());
         descriptorPoolCreateInfo.pPoolSizes = &poolSize;
         OP(vkCreateDescriptorPool)(device, &descriptorPoolCreateInfo, nullptr,
                                 &descriptorPool);
@@ -616,14 +635,14 @@ private:
 
             writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeDescriptorSet.dstSet = this->descriptorSet;
-            writeDescriptorSet.dstBinding = i;
+            writeDescriptorSet.dstBinding = static_cast<uint32_t>(i);
             writeDescriptorSet.dstArrayElement = 0;
             writeDescriptorSet.descriptorCount = 1;
             writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writeDescriptorSet.pBufferInfo = &bufferInfo;
         }
 
-        OP(vkUpdateDescriptorSets)(computedevice->device,writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
+        OP(vkUpdateDescriptorSets)(computedevice->device, static_cast<uint32_t>(writeDescriptorSets.size()), writeDescriptorSets.data(), 0, nullptr);
         return VK_SUCCESS;
     }
 
@@ -774,8 +793,7 @@ public:
         std::vector<VkDescriptorSetLayoutBinding> layoutBindings = OpDescriptorSetLayoutBinding();
         OpCreatePipeline(layoutBindings, loop_count, code_size, code);
         if (OpCreateBuffers(layoutBindings, num_element, sizeof(T))) {
-            std::cout << "Failed to create buffers" << std::endl;
-            throw 1;
+            throw std::runtime_error("Failed to create buffers");
         }
         OpCreateQueryPool();
     };
@@ -803,7 +821,10 @@ public:
 
         T *aData = static_cast<T *>(aptr);
         T *bData = static_cast<T *>(bptr);
-        if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>
+        if constexpr (std::is_same_v<T, float>
+    #ifdef HAVE_FLOAT64
+                    || std::is_same_v<T, _Float64>
+    #endif
     #ifdef HAVE_FLOAT16
                     || std::is_same_v<T, _Float16>
     #endif
@@ -815,8 +836,8 @@ public:
         } else if constexpr (std::is_same_v<T, int> || std::is_same_v<T, int64_t> ||
                             std::is_same_v<T, uint16_t> || std::is_same_v<T, uint8_t>) {
             for (auto i = 0; i < num_element; i++) {
-            aData[i] = 1;
-            bData[i] = 1;
+                aData[i] = 1;
+                bData[i] = 1;
             }
         }
 
@@ -828,23 +849,8 @@ public:
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &this->commandBuffer;
 
-    #if 0
-        VkFenceCreateInfo fence_create_info = {};
-        fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fence_create_info.pNext = nullptr;
-        fence_create_info.flags = 0;
-        VkFence fence = VK_NULL_HANDLE;
-        OP(vkCreateFence)(device, &fence_create_info, nullptr, &fence);
-
-        OP(vkQueueSubmit)(dev->queue, 1, &submitInfo, fence);
-    #else
         OP(vkQueueSubmit)(computedevice->queue, 1, &submitInfo, nullptr);
-    #endif
         OP(vkQueueWaitIdle)(computedevice->queue);
-    #if 0
-        OP(vkWaitForFences)(device, 1, &fence, VK_TRUE, UINT64_MAX);
-        OP(vkDestroyFence)(device, fence, nullptr);
-    #endif
     }
 
     std::pair<float, float> OpVerifyWork(const int num_element, int loop_count)
@@ -863,12 +869,14 @@ public:
                 if ((uint64_t)(rData[i]) != (uint64_t)(loop_count * 8 + 1)%((uint64_t)std::numeric_limits<T>::max()+1)) {
                     std::cout << "Verification failed at index " << i << std::endl;
                     std::cout << "Expected: " << (loop_count * 8 + 1)%(uint64_t(std::numeric_limits<T>::max())+1) << "\t";
-                    std::cout << "Got: " << uint64_t(rData[i]) << "  " <<uint64_t(std::numeric_limits<T>::max())+1<<std::endl;
+                    std::cout << "Got: " << uint64_t(rData[i]) << std::endl;
                     break;
-
                 }
             }
-        } else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, _Float64>
+        } else if constexpr (std::is_same_v<T, float> 
+    #ifdef HAVE_FLOAT64
+                    || std::is_same_v<T, _Float64>
+    #endif
     #ifdef HAVE_FLOAT16
                     || std::is_same_v<T, _Float16>
     #endif
@@ -937,11 +945,12 @@ private:
 
         return {};
     }
-    void checkVulkanVersion()
+    uint32_t getVulkanVersion(void)
     {
-        uint32_t version;
+        uint32_t version = VK_API_VERSION_1_0;
         OP(vkEnumerateInstanceVersion)(&version);
         std::cout << "vulkan version " << VK_VERSION_MAJOR(version) << "." << VK_VERSION_MINOR(version) << "." << VK_VERSION_PATCH(version) << std::endl;
+        return version;
     }
 
     void checkInstanceExtension()
@@ -950,6 +959,9 @@ private:
         OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, nullptr);
         ext_properties.resize(pPropertyCount);
         OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, ext_properties.data());
+        for (auto ext : this->ext_properties) {
+            std::cout << "instance extension " << ext.extensionName << std::endl;
+        }
     }
     bool checkInstanceExtensionFeature(const char *name)
     {
@@ -962,12 +974,13 @@ private:
     }
 
     VkInstance OpCreateInstance(std::vector<const char *> &enabledLayerNames) {
+        uint32_t version = getVulkanVersion();
         VkApplicationInfo applicationInfo = {};
         applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         applicationInfo.pApplicationName = "Vulkan Compute Shader Benchmark";
         // vkGetPhysicalDeviceProperties2 requires 1.1.0
         // SPV_KHR_vulkan_memory_model, use_vulkan_memory_model in spirv requires 1.2.0
-        applicationInfo.apiVersion = VK_MAKE_VERSION(1, 2, 0);
+        applicationInfo.apiVersion = version; // use the libvulkan version directly
         applicationInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         applicationInfo.pEngineName = "Vulkan benchmark";
         applicationInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -990,16 +1003,29 @@ private:
             enabledExtensionNames.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
         }
 #endif
-        if (enabledLayerNames.size() > 0) {
+#if VK_KHR_get_physical_device_properties2
+        if (checkInstanceExtensionFeature(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
+            enabledExtensionNames.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        }
+#endif
+#if VK_KHR_portability_enumeration
+        if (checkInstanceExtensionFeature(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+            enabledExtensionNames.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+            instanceCreateInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        }
+#endif
+        if (enabledExtensionNames.size() > 0) {
             instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensionNames.size());
             instanceCreateInfo.ppEnabledExtensionNames = enabledExtensionNames.data();
         }
         VkInstance instance = VK_NULL_HANDLE;
         VkResult error = OP(vkCreateInstance)(&instanceCreateInfo, nullptr, &instance);
         if (error != VK_SUCCESS) {
-            std::cout << "fail to create instance " << error << std::endl;
+            std::cout << "Fail to create instance " << error << std::endl;
             if (error == VK_ERROR_LAYER_NOT_PRESENT) {
                 std::cout << "VK_ERROR_LAYER_NOT_PRESENT" << std::endl;
+            } else if (error == VK_ERROR_INCOMPATIBLE_DRIVER) {
+                std::cout << "VK_ERROR_INCOMPATIBLE_DRIVER" << std::endl;
             }
             return nullptr;
         }
@@ -1129,7 +1155,6 @@ private:
     } callback;
 public:
     VulkanInstance() {
-        checkVulkanVersion();
         std::string str = findValidationLayerSupport();
         std::vector<const char *> enabledLayerNames;
         if (!str.empty()) {
@@ -1138,7 +1163,7 @@ public:
         checkInstanceExtension();
         instance = OpCreateInstance(enabledLayerNames);
         if (!instance) {
-            throw -1;
+            throw std::runtime_error("Failed to create Vulkan instance.");            
         }
 #if VK_EXT_debug_utils
         OpCreateDebugUtilsCallback();
@@ -1185,6 +1210,7 @@ public:
         if (error != VK_SUCCESS) {
             return {nullptr, 0};
         }
+        std::cout << "Found " << count << " physical devices." << std::endl;
 
         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
         uint32_t queueFamilyIndex = 0;
@@ -1209,7 +1235,11 @@ public:
         return {physicalDevice, queueFamilyIndex};
     }
 };
-
+#ifdef HAVE_FLOAT64
+#define TESTCASE_FP64 _(FP64)
+#else
+#define TESTCASE_FP64
+#endif
 #ifdef HAVE_FLOAT16
 #define TESTCASE_FP16 _(FP16)
 #else
@@ -1226,7 +1256,7 @@ public:
 
 #define TESTCASES \
     _(INT64) \
-    _(FP64) \
+    TESTCASE_FP64 \
     _(INT32) \
     _(FP32) \
     _(INT16) \
@@ -1269,8 +1299,8 @@ class optestcase {
 public:
     void OpRunShader(std::shared_ptr<ComputeDevice> dev)
     {
-        const constexpr int num_element = 1024 * 1024;
-        const constexpr uint32_t loop_count = 10000;
+        const constexpr int num_element = 1024;
+        const constexpr uint32_t loop_count = 100;
         ComputeShader<T> shader(dev, code_size, code, loop_count, num_element);
 
         double duration = MAXFLOAT;
@@ -1296,8 +1326,11 @@ enum testcase_type {
 #undef _
 };
 int main(int argc, char **argv) {
-    std::tuple<optestcase<int64_t>, optestcase<_Float64>, optestcase<int32_t>,
-        optestcase<float>, optestcase<int16_t>,
+    std::tuple<optestcase<int64_t>,
+#ifdef HAVE_FLOAT64
+        optestcase<_Float64>,
+#endif
+        optestcase<int32_t>, optestcase<float>, optestcase<uint16_t>,
 #ifdef HAVE_FLOAT16
         optestcase<_Float16>,
 #endif
@@ -1307,10 +1340,12 @@ int main(int argc, char **argv) {
 #endif
         > testcases = {
             optestcase<int64_t>("int64", shaderint64_size, shaderint64_code, false),
+#ifdef HAVE_FLOAT64
             optestcase<_Float64>("fp64", shaderfp64_size, shaderfp64_code, false),
+#endif
             optestcase<int32_t>("int32", shaderint32_size, shaderint32_code, true),
             optestcase<float>("fp32", shaderfp32_size, shaderfp32_code, true),
-            optestcase<int16_t>("int16", shaderint16_size, shaderint16_code, false),
+            optestcase<uint16_t>("int16", shaderint16_size, shaderint16_code, false),
 #ifdef HAVE_FLOAT16
             optestcase<_Float16>("fp16", shaderfp16_size, shaderfp16_code, false),
 #endif

@@ -12,6 +12,12 @@ check_float16(HAVE_FLOAT16)
 if(HAVE_FLOAT16)
     add_definitions(-DHAVE_FLOAT16)
 endif()
+include(check_float64)
+check_float64(HAVE_FLOAT64)
+if(HAVE_FLOAT64)
+    add_definitions(-DHAVE_FLOAT64)
+endif()
+
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -g -Wall -Wextra -Werror -fno-omit-frame-pointer")
 find_package(Vulkan REQUIRED)
@@ -118,7 +124,7 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 add_executable(vkcompbench main.cpp)
 
-add_dependencies(generate_headers compile_shaders)
+add_dependencies(combine_headers compile_shaders)
 add_dependencies(vkcompbench generate_headers)
 
 target_link_libraries(vkcompbench PUBLIC ${CMAKE_DL_LIBS})
