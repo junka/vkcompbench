@@ -10,6 +10,16 @@
 #include <vector>
 #include <iomanip>
 
+#if defined(__clang__) || defined(__GNUC__)
+#if __has_include(<stdfloat.h>) && (__STDC_VERSION__ >= 202311L)
+#include <stdfloat.h>
+typedef std::float16_t _Float16;
+typedef std::float64_t _Float64;
+#define HAVE_FLOAT64
+#define HAVE_FLOAT16
+#endif
+#endif
+
 #include <dlfcn.h>
 
 #include <vulkan/vulkan_core.h>
