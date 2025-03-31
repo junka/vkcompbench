@@ -1,4 +1,3 @@
-#include <__config>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -90,7 +89,6 @@ public:
     VulkanLib() {
         symbols = std::make_unique<std::map<std::string, void *> >();
 #ifdef __APPLE__
-        // const char *const name = "libMoltenVK.dylib";
         lib = dlopen("libvulkan.dylib", RTLD_LAZY | RTLD_LOCAL);
         if (!lib)
             lib = dlopen("libvulkan.1.dylib", RTLD_LAZY | RTLD_LOCAL);
@@ -1208,22 +1206,21 @@ public:
 
     }
 
-    std::pair<VkPhysicalDevice, uint32_t> getDeviceAndQeueue(void) {
+    std::vector<std::pair<VkPhysicalDevice, uint32_t>> getDeviceAndQeueue(void) {
+        std::vector<std::pair<VkPhysicalDevice, uint32_t>> ret;
         uint32_t count;
 
         VkResult error = OP(vkEnumeratePhysicalDevices)(instance, &count, nullptr);
         if (error != VK_SUCCESS) {
-            return { nullptr, 0};
+            return ret;
         }
         std::vector<VkPhysicalDevice> physicalDevices(count);
         error = OP(vkEnumeratePhysicalDevices)(instance, &count, physicalDevices.data());
         if (error != VK_SUCCESS) {
-            return {nullptr, 0};
+            return ret;
         }
         std::cout << "Found " << count << " physical devices." << std::endl;
 
-        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-        uint32_t queueFamilyIndex = 0;
         for (auto device : physicalDevices) {
             OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count, nullptr);
             std::vector<VkQueueFamilyProperties> queueFamilyProperties(count);
@@ -1232,17 +1229,13 @@ public:
             uint32_t index = 0;
             for (auto &properties : queueFamilyProperties) {
                 if (properties.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                    physicalDevice = device;
-                    queueFamilyIndex = index;
+                    ret.push_back({device, index});
                     break;
                 }
                 index++;
             }
-            if (physicalDevice) {
-                break;
-            }
         }
-        return {physicalDevice, queueFamilyIndex};
+        return ret;
     }
 };
 #ifdef HAVE_FLOAT64
@@ -1398,14 +1391,16 @@ int main(int argc, char **argv) {
 
     VulkanInstance vulkanInstance;
     {
-        auto r = vulkanInstance.getDeviceAndQeueue();
-        auto dev = std::make_shared<ComputeDevice>(r.first, r.second);
+        auto dqs = vulkanInstance.getDeviceAndQeueue();
+        for (auto dq: dqs) {
+            auto dev = std::make_shared<ComputeDevice>(dq.first, dq.second);
 #define _(x) std::get<x>(testcases).enable = dev->features & FEATURE_##x;
-        TESTCASES
+            TESTCASES
 #undef _
-        std::apply([&](auto&&... test) {
-            (( (!test.enable || (!testname.empty() && test.getName().compare(testname) != 0)) ? 0 : (test.OpRunShader(dev), 0)), ...);
-        }, testcases);        
+            std::apply([&](auto&&... test) {
+                (( (!test.enable || (!testname.empty() && test.getName().compare(testname) != 0)) ? 0 : (test.OpRunShader(dev), 0)), ...);
+            }, testcases);
+        }
     }
 
     return 0;
