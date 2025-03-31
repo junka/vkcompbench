@@ -170,7 +170,7 @@ private:
         OP(vkEnumerateDeviceExtensionProperties)(physicalDevice, NULL, &extensionCount, this->ext_properties.data());
         std::cout << "Device Extensions:" << std::endl;
         for (uint32_t i = 0; i < extensionCount; i++) {
-            std::cout << ext_properties[i].extensionName << ":" << ext_properties[i].specVersion << std::endl;
+            std::cout << ext_properties[i].extensionName << ": " << ext_properties[i].specVersion << std::endl;
         }
     }
     bool checkDeviceExtensionFeature(const char *name)
@@ -652,17 +652,17 @@ private:
         VkResult error;
 
         ComputeBuffer *buffer1 = new ComputeBuffer(computedevice, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             num_element, element_size);
         this->buffers.push_back(buffer1);
 
         ComputeBuffer *buffer2 = new ComputeBuffer(computedevice, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             num_element, element_size);
         this->buffers.push_back(buffer2);
 
         ComputeBuffer *buffer3 = new ComputeBuffer(computedevice, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
                             num_element, element_size);
         this->buffers.push_back(buffer3);
 
@@ -1299,8 +1299,8 @@ class optestcase {
 public:
     void OpRunShader(std::shared_ptr<ComputeDevice> dev)
     {
-        const constexpr int num_element = 1024;
-        const constexpr uint32_t loop_count = 100;
+        const constexpr int num_element = 1024 * 1024;
+        const constexpr uint32_t loop_count = 10000;
         ComputeShader<T> shader(dev, code_size, code, loop_count, num_element);
 
         double duration = MAXFLOAT;
