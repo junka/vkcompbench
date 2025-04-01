@@ -10,18 +10,20 @@
 #include <iomanip>
 
 #if defined(__clang__) || defined(__GNUC__)
-#if __has_include(<stdfloat.h>) && (__STDC_VERSION__ >= 202311L)
-#include <stdfloat.h>
+#if __has_include(<stdfloat>)
+#include <stdfloat>
+#ifndef HAVE_FLOAT16
 typedef std::float16_t _Float16;
+#define HAVE_FLOAT16
+#endif
+#ifndef HAVE_FLOAT64
 typedef std::float64_t _Float64;
 #define HAVE_FLOAT64
-#define HAVE_FLOAT16
+#endif
 #endif
 #endif
 
 #include <dlfcn.h>
-
-#include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan.h>
 
 #include "benchmark.h"
@@ -79,7 +81,8 @@ typedef std::float64_t _Float64;
     PFN(vkResetCommandBuffer) \
     PFN(vkFreeCommandBuffers) \
     PFN(vkGetPhysicalDeviceFeatures) \
-    PFN(vkGetPhysicalDeviceFeatures2)
+    PFN(vkGetPhysicalDeviceFeatures2) \
+    PFN(vkBindBufferMemory2)
 
 class VulkanLib {
 private:
@@ -176,21 +179,12 @@ private:
         OP(vkEnumerateDeviceExtensionProperties)(physicalDevice, NULL, &extensionCount, NULL);
         this->ext_properties.resize(extensionCount);
         OP(vkEnumerateDeviceExtensionProperties)(physicalDevice, NULL, &extensionCount, this->ext_properties.data());
-        std::cout << "Device Extensions:" << std::endl;
-        for (uint32_t i = 0; i < extensionCount; i++) {
-            std::cout << ext_properties[i].extensionName << ": " << ext_properties[i].specVersion << std::endl;
-        }
+        // std::cout << "Device Extensions:" << std::endl;
+        // for (uint32_t i = 0; i < extensionCount; i++) {
+        //     std::cout << ext_properties[i].extensionName << ": " << ext_properties[i].specVersion << std::endl;
+        // }
     }
-    bool checkDeviceExtensionFeature(const char *name)
-    {
-        for (auto ext : this->ext_properties) {
-            if (std::string(ext.extensionName).compare(name) == 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-#if VK_KHR_shader_integer_dot_product
+#ifdef VK_KHR_shader_integer_dot_product
     void check_shader_integer_dot_product_support() {
         VkPhysicalDeviceShaderIntegerDotProductPropertiesKHR integerDotProductProperties = {};
         integerDotProductProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES_KHR;
@@ -219,7 +213,6 @@ private:
         this->timestampPeriod = deviceProperties.limits.timestampPeriod;
         std::cout << "GPU " << deviceProperties.deviceName << std::endl;
     }
-
     VkResult createDevice(void)
     {
         std::vector<uintptr_t> enabledFeatures;
@@ -281,7 +274,7 @@ private:
                     enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&storage16bitFeatures));
                 }
             }
-#if VK_AMD_gpu_shader_half_float
+#ifdef VK_AMD_gpu_shader_half_float
             if (deviceProperties.vendorID == 4098) {
                 // for AMD card, do we really need this ? over VK_KHR_shader_float16_int8
                 if (checkDeviceExtensionFeature(VK_AMD_GPU_SHADER_HALF_FLOAT_EXTENSION_NAME)) {
@@ -306,7 +299,11 @@ private:
             enabledFeatures.push_back(reinterpret_cast<uintptr_t>(&features13));
 #endif
         }
-
+#ifdef VK_KHR_bind_memory2
+        if (checkDeviceExtensionFeature(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME)) {
+            enabledExtensions.push_back(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME);
+        }
+#endif
         struct GeneralFeature {
             VkStructureType sType;
             void*     pNext;
@@ -383,6 +380,20 @@ public:
     float timestampPeriod;
 
     uint32_t features;
+    bool checkDeviceExtensionFeature(const char *name)
+    {
+        for (auto ext : this->ext_properties) {
+            if (std::string(ext.extensionName).compare(name) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+    std::string getDeviceName(void)
+    {
+        return std::string(deviceProperties.deviceName);
+    }
+
 };
 
 class ComputeBuffer {
@@ -446,11 +457,6 @@ private:
         error = OP(vkAllocateMemory)(device, &allocateInfo, nullptr, &memory);
         if (error) {
             std::cout << "failed to allocate memory!" << std::endl;
-            return error;
-        }
-
-        error = OP(vkBindBufferMemory)(device, buffer, memory, 0);
-        if (error) {
             return error;
         }
         this->memory = memory;
@@ -629,6 +635,36 @@ private:
 
         return VK_SUCCESS;
     }
+    
+    VkResult OpBindBufferMemorys(void)
+    {
+        VkDevice device = computedevice->device;
+#ifdef VK_KHR_bind_memory2
+        if (computedevice->checkDeviceExtensionFeature(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME)) {
+            std::vector<VkBindBufferMemoryInfo> infos;
+            VkBindBufferMemoryInfo bindBufferMemoryInfo = {};
+            bindBufferMemoryInfo.sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO;
+            bindBufferMemoryInfo.pNext = nullptr;
+            bindBufferMemoryInfo.memoryOffset = 0;
+            for (auto b: this->buffers) {
+                bindBufferMemoryInfo.buffer = b->getBuffer();
+                bindBufferMemoryInfo.memory = b->getMemory();
+                infos.push_back(bindBufferMemoryInfo);
+            }
+            return OP(vkBindBufferMemory2)(device, static_cast<uint32_t>(infos.size()), infos.data());
+        } else {
+#endif
+            for (auto b: this->buffers) {
+                VkResult error = OP(vkBindBufferMemory)(device, b->getBuffer(), b->getMemory(), 0);
+                if (error) {
+                    return error;
+                }
+            }
+#ifdef VK_KHR_bind_memory2
+        }
+#endif
+        return VK_SUCCESS;
+    }
 
     VkResult OpWriteDescriptorSets(void)
     {
@@ -674,6 +710,7 @@ private:
                             num_element, element_size);
         this->buffers.push_back(buffer3);
 
+        OpBindBufferMemorys();
         OpCreateDescriptorPool(layoutBindings);
 
         OpAllocateDescriptorSets();
@@ -890,10 +927,10 @@ public:
     #endif
                              ) {
             for (auto i  = 0; i < num_element; i++) {
-                float diff = std::fabs(rData[i] - float((i % 5) + 1) * 1.f * (1.f / (1.f - float((i % 9) + 1) * (0.1f))));
+                float diff = std::fabs(static_cast<float>(rData[i]) - static_cast<float>((i % 5) + 1) * 1.f * (1.f / (1.f - static_cast<float>((i % 9) + 1) * (0.1f))));
                 if (diffmax < diff) {
                     diffmax = diff;
-                    precision = diff * 100.0 /float((i % 5) + 1) * 1.f * (1.f / (1.f - float((i % 9) + 1) * (0.1f)));
+                    precision = diff * 100.0 /static_cast<float>((i % 5) + 1) * 1.f * (1.f / (1.f - float((i % 9) + 1) * (0.1f)));
                 }
                 // relax the tolerance for float16
                 if (diff > 0.2f) {
@@ -967,9 +1004,9 @@ private:
         OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, nullptr);
         ext_properties.resize(pPropertyCount);
         OP(vkEnumerateInstanceExtensionProperties)(nullptr, &pPropertyCount, ext_properties.data());
-        for (auto ext : this->ext_properties) {
-            std::cout << "instance extension " << ext.extensionName << std::endl;
-        }
+        // for (auto ext : this->ext_properties) {
+        //     std::cout << "instance extension " << ext.extensionName << std::endl;
+        // }
     }
     bool checkInstanceExtensionFeature(const char *name)
     {
@@ -1000,7 +1037,7 @@ private:
         // enable debug and validation layers
         instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayerNames.size());
         instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames.data();
-
+#ifndef NDEBUG
 #if VK_EXT_debug_utils
         if (checkInstanceExtensionFeature(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
             enabledExtensionNames.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -1010,6 +1047,7 @@ private:
         if (enabledExtensionNames.empty() && checkInstanceExtensionFeature(VK_EXT_DEBUG_REPORT_EXTENSION_NAME)) {
             enabledExtensionNames.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
         }
+#endif
 #endif
 #if VK_KHR_get_physical_device_properties2
         if (checkInstanceExtensionFeature(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
@@ -1041,7 +1079,7 @@ private:
         return instance;
     }
 
-    
+#ifndef NDEBUG
 #if VK_EXT_debug_utils
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -1150,9 +1188,10 @@ private:
         return callback;
     }
 #endif
-
+#endif
     std::vector<const char *> enabledExtensionNames;
     std::vector<VkExtensionProperties> ext_properties;
+#ifndef NDEBUG
     union {
 #if VK_EXT_debug_utils
         VkDebugUtilsMessengerEXT utils;
@@ -1161,18 +1200,22 @@ private:
         VkDebugReportCallbackEXT report;
 #endif
     } callback;
+#endif
 public:
     VulkanInstance() {
-        std::string str = findValidationLayerSupport();
         std::vector<const char *> enabledLayerNames;
+#ifndef NDEBUG
+        std::string str = findValidationLayerSupport();
         if (!str.empty()) {
             enabledLayerNames.push_back(str.c_str());
         }
+#endif
         checkInstanceExtension();
         instance = OpCreateInstance(enabledLayerNames);
         if (!instance) {
             throw std::runtime_error("Failed to create Vulkan instance.");            
         }
+#ifndef NDEBUG
 #if VK_EXT_debug_utils
         OpCreateDebugUtilsCallback();
 #endif
@@ -1181,9 +1224,11 @@ public:
             OpCreateDebugReportCallback();
         }
 #endif
+#endif
     }
 
     ~VulkanInstance() {
+#ifndef NDEBUG
 #if VK_EXT_debug_utils
         if (callback.utils && !enabledExtensionNames.empty() && 
             std::string(enabledExtensionNames[0]).compare(VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) {
@@ -1201,6 +1246,7 @@ public:
             if (vkDestroyDebugReportCallbackEXT)
                 vkDestroyDebugReportCallbackEXT(instance, callback.report, nullptr);
         }
+#endif
 #endif
         OP(vkDestroyInstance)(instance, nullptr);
 
@@ -1360,19 +1406,18 @@ int main(int argc, char **argv) {
 #endif
     };
 
-    std::string testname;
+    std::string testname, gpuname;
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
             if (std::string(argv[i]).compare("--help") == 0) {
-                std::cout << "Usage: " << argv[0] << " [--help] [--list] [--test <testname>]" << std::endl;
+                std::cout << "Usage: " << argv[0] << " [--help] [--list] [--test <testname>] [--gpu <id>]" << std::endl;
                 return 0;
             } else if (std::string(argv[i]).compare("--list") == 0) {
                 std::cout << "Available tests:" << std::endl;
                 std::apply([](auto&&... test) {((std::cout << test.getName() << '\n'), ...);}, testcases);
                 return 0;
             } else if (std::string(argv[i]).compare("--test") == 0) {
-                testname = std::string(argv[i+1]);
-                i++;
+                testname = std::string(argv[++i]);
                 bool found = false;
                 std::apply([&](auto&&... test) {
                     ((((test.getName().compare(testname) == 0) ? (found = true, 0) : 0)), ...);
@@ -1382,6 +1427,8 @@ int main(int argc, char **argv) {
                     std::cout << "invalid testname \"" << testname << "\"" << std::endl;
                     return -1;
                 }
+            } else if (std::string(argv[i]).compare("--gpu") == 0) {
+                gpuname = std::string(argv[++i]);
             } else {
                 std::cout << "invalid argument " << argv[i] << std::endl;
                 return -1;
@@ -1393,7 +1440,11 @@ int main(int argc, char **argv) {
     {
         auto dqs = vulkanInstance.getDeviceAndQeueue();
         for (auto dq: dqs) {
+            
             auto dev = std::make_shared<ComputeDevice>(dq.first, dq.second);
+            if (!gpuname.empty() && dev->getDeviceName().find(gpuname) == std::string::npos) {
+                continue;
+            }
 #define _(x) std::get<x>(testcases).enable = dev->features & FEATURE_##x;
             TESTCASES
 #undef _
@@ -1402,6 +1453,5 @@ int main(int argc, char **argv) {
             }, testcases);
         }
     }
-
     return 0;
 }
