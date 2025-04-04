@@ -20,6 +20,11 @@ typedef std::float16_t _Float16;
 typedef std::float64_t _Float64;
 #define HAVE_FLOAT64
 #endif
+#else
+#ifndef HAVE_FLOAT64
+typedef double _Float64;
+#define HAVE_FLOAT64
+#endif
 #endif
 #endif
 
@@ -150,6 +155,10 @@ private:
         OP(vkGetPhysicalDeviceFeatures)(physicalDevice, &deviceFeatures);
         this->features |= (deviceFeatures.shaderInt64 ? FEATURE_INT64 : 0);
         this->features |= (deviceFeatures.shaderFloat64 ? FEATURE_FP64 : 0);
+        if (deviceProperties.deviceID == 16027) {
+            // GPU Intel(R) UHD Graphics 630 will timeout for int64
+            this->features &= ~FEATURE_INT64;
+        }
         this->features |= FEATURE_FP32 | FEATURE_INT32;
         this->features |= (deviceFeatures.shaderInt16 ? FEATURE_INT16 : 0);
 
@@ -348,9 +357,9 @@ private:
 public:
     ComputeDevice(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex):
         physicalDevice(physicalDevice), queueFamilyIndex(queueFamilyIndex) {
+        getDeviceTimeLimits();
         checkDeviceDataTypeFeatures();
         checkDeviceExtension();
-        getDeviceTimeLimits();
         VkResult err = createDevice();
         if (err != VK_SUCCESS) {
             std::map<int, std::string> errstrings;
@@ -1266,19 +1275,15 @@ public:
             return ret;
         }
         std::cout << "Found " << count << " physical devices." << std::endl;
-
         for (auto device : physicalDevices) {
             OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count, nullptr);
             std::vector<VkQueueFamilyProperties> queueFamilyProperties(count);
-            OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count,
-                                                    queueFamilyProperties.data());
-            uint32_t index = 0;
-            for (auto &properties : queueFamilyProperties) {
-                if (properties.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                    ret.push_back({device, index});
+            OP(vkGetPhysicalDeviceQueueFamilyProperties)(device, &count, queueFamilyProperties.data());
+            for (int index = static_cast<int>(queueFamilyProperties.size()) - 1; index >= 0; --index) {
+                if (queueFamilyProperties[index].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                    ret.push_back({device, static_cast<uint32_t>(index)});
                     break;
                 }
-                index++;
             }
         }
         return ret;
